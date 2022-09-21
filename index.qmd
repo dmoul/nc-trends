@@ -2,4 +2,5 @@
 
 Inspired by reading *North Carolina beyond the connected age: the Tar Heel State in 2050* by Michael L. Walden, I want to examine and visualize demograph trends myself.
 
-Using 
+Using tidycensus to get the data and geometry...
+

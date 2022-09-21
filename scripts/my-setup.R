@@ -45,6 +45,8 @@ library(scales)
 # 
 # library(gt)
 
+theme_set(theme_light())
+
 set.seed(123)
 
 # let's make some of the modeling stuff go faster 
