@@ -1,0 +1,41 @@
+---
+title: "Notes and TODO"
+author: "Daniel Moul"
+format: html
+---
+
+## Data questions
+
+Using tidycensus to get census data and geometry data
+
+* Which demographic data fields exactly?
+
+* From which census data sets?
+
+* Over which years
+  - ideally: 1990, 2000, 2010, 2020
+
+* Which areas: counties? PUMAs? zip codes?
+  - How consistent are the areas over 30 years?
+
+
+## Implementation questions
+
+* Should I use targets? Is it worth the overhead? Probably.
+
+* Will tidycensus really cache data when using quarto? It didn't seem to be doing that in my nightlight project
+
+
+## Analysis quesitons
+
+What is the best way to represent ordered categories of data in a geographical data set?
+  - example: under 18, 18-65, over 60 for each area, for each census
+  
+Should I make this a shiny app, so it's easier for the user to switch among dimensions of data? If so, where would I host the output?
+
+Should I use observablejs to add interactivity? Will github.io present it OK?
+
+
+
+
+
