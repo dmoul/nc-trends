@@ -1,0 +1,205 @@
+# exploration
+
+```{r}
+
+source("./scripts/my-setup.R")
+```
+
+
+```{r}
+#| eval: FALSE
+
+#census_api_key("ADD YOUR KEY HERE", install = TRUE) # already done
+
+# get variable lists (and determine which data sets are available)
+
+# v90_sf1 <- load_variables(1990, "sf1", cache = TRUE)
+# Error: The 1990 decennial Census endpoint has been removed by the Census Bureau. We will support 1990 data again when the endpoint is updated; in the meantime, we recommend using NHGIS (https://nhgis.org) and the ipumsr R package.
+
+# v90_sf2 <- load_variables(1990, "sf2", cache = TRUE)
+# v90_sf3 <- load_variables(1990, "sf3", cache = TRUE)
+# v90_sf4 <- load_variables(1990, "sf4", cache = TRUE)
+
+v00_sf1 <- load_variables(2000, "sf1", cache = TRUE)
+v00_sf2 <- load_variables(2000, "sf2", cache = TRUE)
+v00_sf3 <- load_variables(2000, "sf3", cache = TRUE)
+v00_sf4 <- load_variables(2000, "sf4", cache = TRUE)
+
+v10_sf1 <- load_variables(2010, "sf1", cache = TRUE)
+v10_sf2 <- load_variables(2010, "sf2", cache = TRUE)
+#v10_sf3 <- load_variables(2010, "sf2", cache = TRUE) # error: not released
+
+# v20_sf1 <- load_variables(2020, "sf1", cache = TRUE)
+# Error: API endpoint not found. Does this data set exist for the specified year? See https://api.census.gov/data.html for data availability.
+# v20_sf2 <- load_variables(2020, "sf2", cache = TRUE)
+
+```
+
+Which do I want/need?
+
+```
+load_variables(
+  year,
+  dataset = c("sf1", "sf2", "sf3", "sf4", "pl", "as", "gu", "mp", "vi", "acs1", "acs3",
+    "acs5", "acs1/profile", "acs3/profile", "acs5/profile", "acs1/subject",
+    "acs3/subject", "acs5/subject", "acs1/cprofile", "acs5/cprofile"),
+  cache = FALSE
+)
+```
+
+# Let's get some data
+
+```{r}
+
+d2000_tmp <- get_decennial(geography = c("county"), 
+                              variables = c(pop = "P001001"),
+                              sumfile = "sf1",
+                              state = "NC",
+                              year = 2000,
+                              geometry = TRUE,
+                              output = "wide"
+        )
+
+d_county_boundaries <- d2000_tmp |>
+  select(-pop)
+
+d2000_pop <- d2000_tmp |>
+  st_drop_geometry()
+  
+# can't use year = c(2000, 2010): 
+# Getting data from the 2010 decennial Census
+# Warning: 'length(x) = 2 > 1' in coercion to 'logical(1)'Warning: 'length(x) = 2 > 1' in coercion to 'logical(1)'Error in if (year == 1990) { : the condition has length > 1
+
+d2010_pop <- get_decennial(geography = c("county"), 
+                           variables = c(pop = "P001001"),
+                           sumfile = "sf1",
+                           state = "NC",
+                           year = 2010,
+                           geometry = FALSE,
+                           output = "wide"
+)
+
+d2020_pop <- get_acs(geography = c("county"), 
+                     variables = c(pop = "B01003_001E",
+                                   #pop_annotation = "B01003_001EA",
+                                   pop_moe = "B01003_001M"#,   # moe not useful; delete later
+                                   #pop_moe_annotation = "B01003_001MA"
+                                   ),
+                     #sumfile = "acs1",
+                     state = "NC",
+                     year = 2020,
+                     geometry = FALSE,
+                     output = "wide"
+)
+  
+  # Error: Your API call has errors. The API message returned is error: error: unknown variable 'P001001E'.
+
+# https://api.census.gov/data/2020/acs/acs5/variables.html
+
+# Error: Your API call has errors.  The API message returned is error: error: unknown variable 'B01003_001EAE'.
+# pop_annotation = "B01003_001EA",
+
+```
+
+```{r}
+d_pop_long <- bind_rows(
+  d2000_pop |> mutate(year = 2000),
+  d2010_pop |> mutate(year = 2010),
+  d2020_pop |> mutate(year = 2020) |> select(-pop_moe)
+) |>
+  rename(name = NAME) |>
+  mutate(name = str_extract(name, "[A-z]+"))
+
+
+d_pop_growth_wide <- 
+  left_join(d2000_pop |> rename(pop_2000 = pop),
+            d2010_pop |> rename(pop_2010 = pop),
+            by = c("GEOID", "NAME")) |>
+  left_join(d2020_pop |> rename(pop_2020 = pop) |> select(-pop_moe),
+            by = c("GEOID", "NAME")) |>
+  rename(name = NAME) |>
+  mutate(name = str_extract(name, "[A-z]+")) |>
+  mutate(pct_growth_2010 = pop_2010 / pop_2000 - 1,
+         pct_growth_2020 = pop_2020 / pop_2010 - 1)
+
+d_pop_growth_long <- d_pop_growth_wide |>
+  pivot_longer(cols = starts_with("pct_growth_"),
+               names_to = "year",
+               names_pattern = "pct_growth_(.+)",
+               values_to = "pct_growth"
+               )
+  
+  
+
+```
+
+
+```{r}
+d_pop_long |>
+  mutate(name = fct_reorder(name, pop, max),
+         year = factor(year)) |>
+  ggplot(aes(pop, name, color = year)) +
+  geom_point(size = 1) +
+  scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  labs(
+    x = "Population (log10 scale)",
+    y = NULL,
+  )
+
+
+```
+
+```{r}
+xx <- d_pop_growth_long |>
+  mutate(name = fct_reorder(name, pop_2020),
+         year = factor(year)) |>
+  mutate(name_label = as.character(name),
+         name_order = as.integer(name),
+         positive_growth = pct_growth > 0)
+
+nc_counties <- as.character(sort(unique(xx$name)))
+nc_counties_row <- 1:length(nc_counties)
+
+xx |>
+  ggplot(aes(x = year, xend = year, y = name_order, yend = name_order + pct_growth, color = positive_growth)) +
+  geom_segment(size = 1) +
+  #scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_y_continuous(breaks = xx$name_order,
+                     labels = xx$name_label) +
+  theme(panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  labs(
+    #x = "Population (log10 scale)",
+    y = NULL,
+  )
+
+
+```
+
+
+```{r}
+xx <- d_pop_growth_long |>
+  mutate(name = fct_reorder(name, pct_growth),
+         year = factor(year)) |>
+  mutate(name_label = as.character(name),
+         name_order = as.integer(name),
+         positive_growth = pct_growth > 0)
+
+xx |>
+  ggplot(aes(name, pct_growth, color = positive_growth, fill = positive_growth)) +
+  geom_col(size = 1) +
+  #scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_y_continuous(breaks = xx$name_order,
+                     labels = xx$name_label) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none") +
+  facet_wrap( ~ year, nrow = 2) +
+  labs(
+    #x = "Population (log10 scale)",
+    x = NULL,
+    y = NULL,
+  )
+```
+
