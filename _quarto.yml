@@ -2,7 +2,7 @@ project:
   type: book
   
 book:
-  title: "North Carolina sketch: geography, population, income, and education"
+  title: "North Carolina trends: geography, population, income, and education"
   author: "[Daniel Moul](https://dmoul.github.io)"
   date: "April 2, 2023"
   cover-image: "./images/nc-map-pop-density-2020.png"
