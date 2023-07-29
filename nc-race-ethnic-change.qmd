@@ -1,0 +1,825 @@
+# NC racial-ethnic makeup and changes
+
+Over the last 50 years North Carolina has experienced noticeable changes in the racial and ethnic mix in most counties. The Asian immigration wave is quite visible as is the increase in people of two or more races. There has been a noticeable decline in white and black population in some counties and a decline in their percentage of county population in most counties.
+
+Racial categories used below include the following:
+
+* White
+* Black
+* Asian and Pacific Islander (combined; also includes Hawaiian)
+* Native American
+* Two or more races (combined with "one other race")
+
+Ethnic categories explored here are Hispanic and non-Hispanic. 
+
+>Hispanic origin is considered an ethnicity, not a race. Hispanics may be of any race.^[From description at <https://api.census.gov/data/2021/pep/natmonthly.html> ] 
+
+:::{.callout-note collapse="true"}
+## Note on 2020 census differential privacy
+
+The `tidycensus` package offers the following helpful warning when returning results from 2020, which is relevant to this endeavor:
+
+>2020 decennial Census data use differential privacy, a technique that introduces errors into data to preserve respondent confidentiality. Small counts should be interpreted with caution. See <https://www.census.gov/library/fact-sheets/2021/protecting-the-confidentiality-of-the-2020-census-redistricting-data.html> for additional guidance.
+:::
+
+:::{.callout-note collapse="true"}
+## Note on the limitations of US Census race and ethnic categories
+
+Identity is complicated. Categories used by the US Census are imperfect despite a lot of care going into their formulation (see the standards on [race and ethnicity](https://www.govinfo.gov/content/pkg/FR-1997-10-30/pdf/97-28653.pdf) set by the U.S. Office of Management and Budget (OMB) in 1997). And the questions asked in US Census surveys [can change year to year](https://www.census.gov/newsroom/blogs/random-samplings/2021/08/measuring-racial-ethnic-diversity-2020-census.html). 
+
+This creates ambiguities. For an example of their outworkings, see [Who Is 'Some Other Race,' the Second-Largest Racial Group in Massachusetts?](https://www.bostonindicators.org/article-pages/2022/april/some-other-race-census-20220426) by Luke Schuster, 
+April 26, 2022, www.bostonindicators.com.
+:::
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R")
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+library(geofacet)
+library(ggtext)
+
+```
+
+```{r}
+
+county_region_df <- tar_read(nc_county_region_mapping)
+
+```
+
+```{r}
+df_race_tmp <- tar_read(pop_race) |>
+    left_join(county_region_df,
+              by = "county")
+
+df_race_two_or_more <- df_race_tmp |>
+  filter(str_detect(new_var, "^r_two_or_more"),
+         !is.na(value)) |>
+  group_by(year, county) |>
+  mutate(pct = value / sum(value, na.rm = TRUE)) |>
+  ungroup() |>
+  group_by(county, new_var) |>
+  mutate(cagr = (value / lag(value))^(1 / (year - lag(year))) - 1,
+         cagr = if_else(value == 0, NA_real_, cagr)) |>
+   ungroup()
+
+# TODO: need to exclude data series without data when calculating CAGR (but not drop those years from df_race)
+df_race <- df_race_tmp |>
+  filter(str_detect(new_var, "^r_")) |>
+  group_by(year, county) |>
+  mutate(pct = value / sum(value, na.rm = TRUE)) |>
+  ungroup() |>
+  group_by(county, new_var) |>
+  mutate(cagr = (value / lag(value))^(1 / (year - lag(year))) - 1,
+         cagr = if_else(value == 0, NA_real_, cagr)) |>
+  ungroup()
+
+agriculture <- county_region_df |>
+  filter(region == "Agriculture") |>
+  pull(county)
+
+```
+
+<br>
+
+## Racial groups 
+
+```{r fig.height=16, fig.width=10}
+#| label: fig-race-count
+#| fig-cap: "Population by race in NC counties"
+#| fig-height: 16
+#| fig-width: 20
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot <- df_race
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = var_factor, color = var_factor)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = var_factor), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_wrap( ~ county, ncol = 10, scales = "free_y") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Population by race in NC counties (1970 to 2020)", 
+       subtitle = "Note: 'two or more races' not available until 2000",
+       x = NULL,
+       y = "Number of people (Y axis varies)",
+       fill = "Race",
+       color = "Race",
+       caption = my_caption_nhgis)
+
+```
+
+Placing the plots in approximate geographic position (@fig-race-count-geofacet-no-y-axis-text) makes regional patterns visible:
+
+* African-Americans are nearly absent in the western third of the state and highest portions in the eastern third.
+* Native Americans are concentrated in Swain and Jackson counties in the far west of the state and Robeson, Scotland, and Hoke in the south central.
+* The Asian population has grew significantly after 1990. People of one other race or more than one race has grown since 2000 in most counties and most especially in the urban crescent.
+* White population growth declined or turned negative in many counties, especially in the ten years to 2020.
+* Some counties show counter trends, for example, whites make up nearly all of the growth in most of the coastal counties: Currituck, Dare, Carteret, Pender, New Hannover, Brunswick.
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-race-count-geofacet-no-y-axis-text
+#| fig-cap: "Population by race in NC counties (approximate geographical position)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+data_for_plot <- df_race |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county))
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = var_factor, color = var_factor)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = var_factor), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_geo( ~ county,
+             scales = "free_y",
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(3.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Population by race in NC counties (1970 to 2020)", 
+       subtitle = glue("Note: 'Y axis scale varies by more than 100x; see other plots for details",
+                       "\nNote: 'two or more races' not available until 2000"),
+       x = NULL,
+       y = "Number of people (Y axis varies)",
+       fill = "Race",
+       color = "Race",
+       caption = my_caption_nhgis)
+
+```
+
+<br>
+
+It's easier to compare counties and see the changing mix when looking at the percent of population by race.
+
+```{r fig.height=16, fig.width=10}
+#| label: fig-race-pct
+#| fig-cap: "Race as percent of population in NC counties"
+#| fig-height: 16
+#| fig-width: 20
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot <- df_race
+
+data_for_plot |>
+  filter(!is.na(pct)) |>
+  ggplot(aes(y = pct, x = year, fill = var_factor, color = var_factor)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = var_factor), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_wrap( ~ county, ncol = 10,) +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Race as percent of population in NC counties (1970 to 2020)", 
+       subtitle = "Note: 'two or more races' not available until 2000",
+       x = NULL,
+       y = "Percent of population",
+       fill = "Race",
+       color = "Race",
+       caption = my_caption_nhgis)
+
+```
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-race-pct-geofacet
+#| fig-cap: "Race as percent of population in NC counties (approximate geographical position)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+data_for_plot <- df_race |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county))
+
+data_for_plot |>
+  filter(!is.na(pct)) |>
+  ggplot(aes(y = pct, x = year, fill = var_factor, color = var_factor)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = var_factor), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_geo( ~ county,
+             scales = "free_y",
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(3.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Race as percent of population in NC counties (1970 to 2020)", 
+       subtitle = "Note: 'two or more races' not available until 2000",
+       x = NULL,
+       y = "Percent of population",
+       fill = "Race",
+       color = "Race",
+       caption = my_caption_nhgis)
+
+```
+
+<br>
+
+### Changes in county population and proportion of the population
+
+Racial groups at the county level (@fig-race-change-county) makes visible that there have been more counties seeing declines in the white and black population (1) since 2000 in the *population*; and (2) since 1980 in the *proportion of the population*.
+
+```{r}
+county_race_delta <- df_race |>
+  filter(!is.na(value)) |>
+  select(-cagr) |>
+  group_by(county, new_var) |>
+  mutate(pop_delta = value - lag(value, default = NA),
+         pct_delta = pct - lag(pct, default = NA)
+  ) |>
+  ungroup() |>
+  filter(!is.na(pop_delta))
+
+county_race_change <- county_race_delta |>
+  group_by(year, county, region, new_var) |>
+  mutate(pop_decline = pop_delta < 0,
+            pct_decline = pct_delta < 0,
+         pop_increase = pop_delta > 0,
+         pct_increase = pct_delta > 0) |>
+  ungroup() |>
+  filter(!is.na(pop_decline))
+
+county_race_change_summary <- county_race_change |>
+  group_by(year, new_var, var_factor) |>
+  summarize(pop_decline = sum(pop_decline),
+            pop_pct_decline = sum(pct_decline),
+            pop_increase = sum(pop_increase),
+            pop_pct_increasee = sum(pct_increase),
+            mean_pop_delta = mean(abs(pop_delta))) |>
+  ungroup() |>
+  pivot_longer(cols = starts_with("pop_"), names_to = "variable", values_to = "value")
+
+county_race_change_summary_region <- county_race_change |>
+  group_by(year, new_var, region, var_factor) |>
+  summarize(pop_decline = sum(pop_decline),
+            pop_pct_decline = sum(pct_decline),
+            pop_increase = sum(pop_increase),
+            pop_pct_increase = sum(pct_increase),
+            mean_pop_delta = mean(abs(pop_delta))) |>
+  ungroup() |>
+  inner_join(county_region_df |>
+               distinct(region, n_counties),
+             by = join_by(region)) |>
+  pivot_longer(cols = starts_with("pop_"), names_to = "variable", values_to = "value")
+
+```
+
+```{r fig.height=4, fig.width=8}
+#| label: fig-race-change-county
+#| fig-cap: "Racial group population declines and increases in NC counties"
+#| fig-height: 4
+#| fig-width: 8
+#| column: screen-inset-right
+
+county_race_change_summary |>
+  mutate(all_counties = "All counties (100)") |>
+  ggplot() +
+  geom_line(aes(year, value, color = var_factor, linewidth = mean_pop_delta),
+            alpha = 0.7) +
+  geom_point(aes(year, value , color = var_factor, size = mean_pop_delta),
+            alpha = 0.7, show.legend = FALSE) +
+  scale_y_continuous(label = label_percent(scale = 1)) +
+  expand_limits(y = c(0, 1)) +
+  coord_cartesian(xlim = c(1978, 2022)) +
+  facet_grid(all_counties ~ variable) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3)),
+         size = "none",
+         linewidth = "none") +
+  theme(legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "Racial groups: changing population\nand changing portion of the population",
+    subtitle = glue("Percent of NC counties in each region by decennial census", 
+                    "\nNote: 'two or more races' not available until 2000",
+                    "\nLine width and point size are relative mean population change",),
+    x = NULL,
+    y = "Percent of counties",
+    color = NULL,
+    caption = my_caption_nhgis
+  )
+
+```
+
+<br>
+
+Using the regional designations defined in @fig-nc-map-county-names, the differing dynamics in the regions become more visible:
+
+```{r fig.height=10, fig.width=8}
+#| label: fig-race-change-region
+#| fig-cap: "Racial group population declines and increases in NC regions"
+#| fig-height: 10
+#| fig-width: 8
+#| column: screen-inset-right
+
+county_race_change_summary_region |>
+  mutate(region_label = glue("{region} ({n_counties})")) |>
+  ggplot() +
+  geom_line(aes(year, value / n_counties, color = var_factor, linewidth = mean_pop_delta),
+            alpha = 0.7) + 
+  geom_point(aes(year, value / n_counties, color = var_factor, size = mean_pop_delta),
+            alpha = 0.7, show.legend = FALSE) +
+  scale_y_continuous(label = label_percent()) +
+  coord_cartesian(xlim = c(1978, 2022)) +
+  facet_grid(region_label ~ variable) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3)),
+         size = "none",
+         linewidth = "none") +
+  theme(legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "Racial groups: changing population\nand changing portion of the population",
+    subtitle = glue("Percent of NC counties in each region by decennial census", 
+                    "\nNote: 'two or more races' not available until 2000",
+                    "\nLine width and point size are relative mean population change",),
+    x = NULL,
+    y = "Percent of counties in region",
+    color = NULL,
+    caption = my_caption_nhgis
+  )
+
+```
+
+<br>
+
+The cumulative distribution of racial groups' portion of county population colored by census year (@fig-race-ecdf-1) makes visible the following:
+
+* White and black curves are shifting left, meaning their proportion of the population is decreasing whatever the current proportion of counties' population.
+* Asian and Pacific islander and two or more races are shifting right while opening at the higher end, meaning they are growing at a fairly constant rate whatever the proportion of a county's population. "Two or more" grew a surprisingly large amount in the ten years to 2020. Still, these groups' proportion of the population remains quite small.
+* The proportion of county population that is Native American population has increased in counties with the largest portions of Native Americans.
+
+```{r fig.height=6, fig.width=10}
+#| label: fig-race-ecdf-1
+#| fig-cap: "Racial group portion of population - cumulative distribution"
+#| fig-height: 6
+#| fig-width: 10
+#| column: screen-inset-right
+
+df_race |>
+  filter(!year %in% c(2012, 2019)) |>
+  mutate(year = factor(year)) |>
+  ggplot() +
+  stat_ecdf(aes(pct, color = year, group = year),
+            pad = FALSE, na.rm = TRUE) +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_viridis_d(end = 0.84) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  theme(legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  facet_wrap(. ~ var_factor, ncol = 5) + #scales = "free"
+  labs(
+    title = "Racial groups' portion of NC county population",
+    subtitle = glue("Cumulative distribution",
+                    "; 'two or more races' not available until 2000"),
+    x = "Proportion of county population",
+    y = "Percent of counties",
+    color = NULL,
+    caption = my_caption_nhgis
+  )
+```
+
+<br>
+
+We can also look directly at *changes* (delta) in proportion of the population from the last decennial census to the next.
+
+```{r fig.height=6, fig.width=10}
+#| label: fig-race-pct-delta-ecdf
+#| fig-cap: "Racial group population portion delta - cumulative distribution"
+#| fig-height: 6
+#| fig-width: 10
+#| column: screen-inset-right
+
+county_race_delta |>
+  mutate(year = factor(year)) |>
+  ggplot() +
+  stat_ecdf(aes(pct_delta, color = year, group = year),
+            pad = FALSE, na.rm = TRUE) +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_viridis_d(end = 0.84) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  theme(legend.position = "top",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  facet_wrap(. ~ var_factor, ncol = 5) +
+  labs(
+    title = "Racial groups' delta in proportion of the population",
+    subtitle = glue("NC county cumulative distribution",
+                    "; 'two or more races' not available until 2000"),
+    x = "Decennial census delta: proportion of the population compared to ten years prior",
+    y = "Percent of counties",
+    color = NULL,
+    caption = my_caption_nhgis
+  )
+```
+
+<br>
+
+Plotting each racial group's county population portion over time on one plot (@fig-racial-groups-pct-state) makes some trends easier to see:
+
+* Asian population has grown everywhere; the growth rate accelerated dramatically after 1990 (or the method for recording Asians changed before the 2020 census)
+* People of two or more races or "one other race" has more than doubled in the two decades 2000-2020 with most of the growth occurring after 2010.
+* Whites remain a large majority in most counties (only about 10% of counties don't have a white majority), however their proportion of the population is in decline.
+* Black population proportion has been declining for the whole time period in this data set but since 2000 at a slower rate than whites.
+* Native Americans populations are concentrated in a small number of counties.
+
+<br>
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-racial-groups-pct-state
+#| fig-cap: "Racial groups percent of county population (1970 - 2020)"
+#| fig-height: 6
+#| fig-width: 8
+#| column: screen-inset-right
+#| warning: false
+
+
+data_for_plot <- df_race |>
+  filter(!is.na(value)) |>
+  mutate(new_var = fct_reorder(new_var, -value, sum))
+
+label_for_plot <- data_for_plot |>
+  filter(year == max(year)) |>
+  group_by(year, new_var) |>
+  summarize(value_state_race = sum(value),
+            y_label = 0.9 * max(pct)) |>
+  ungroup() |>
+  mutate(pct_of_state_pop = value_state_race / sum(value_state_race))
+
+data_for_plot |>
+  #filter(race != "other") |>
+  ggplot() +
+  geom_line(aes(year, pct, group = county, color = region), 
+            #color = "black",
+            linewidth = 0.5, 
+            alpha = 0.25,
+            na.rm = TRUE) +
+  geom_smooth(aes(year, pct), 
+            se = FALSE, formula = 'y ~ x', method = 'loess', span = 0.7,
+            linewidth = 1.5, alpha = 1,
+            na.rm = TRUE) +
+  geom_richtext(
+    data = label_for_plot,
+    aes(label = glue("NC {year}: {round(value_state_race / 1e6, digits = 2)} M ({percent(pct_of_state_pop, digits = 1)})"), 
+        x = 1980, y = y_label),
+    fill = "white", label.color = "white", # remove background and outline
+    #label.padding = grid::unit(rep(0, 4), "pt") # remove padding
+    size = 3, hjust = 0
+  ) +
+  # scale_x_continuous(breaks = c(2000, 2010, 2021)) +
+  scale_y_continuous(labels = percent_format()) +
+  # scale_color_viridis_d(end = 0.8) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_manual(values = region_colors$color) +
+  facet_wrap(~ new_var, scales = "free_y") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(title = "Racial groups portion of county population",
+       subtitle = "with trend lines per racial group",
+       x = NULL,
+       y = "Percent of county population (Y axis varies)",
+       color = NULL,
+       caption = my_caption_nhgis)
+```
+
+<br>
+
+## Hispanic / Latino ethnicity
+
+Below I use 'Hispanic' as a shorthand to refer to Hispanic and Latino. The US Census Bureau includes both in the same category.
+
+The Hispanic population has grown significantly 2000 to 2020 to over 10% of the state population. The growth in the ten years to 2010 was larger than the ten years to 2020.
+
+```{r}
+#| label: get-hisp-data
+#| include: false
+
+# TODO: prepare dataframe in target pipeline
+
+d_hisp_county <- tar_read(pop_hisp)
+
+d_hisp_county_long <- d_hisp_county |>
+  pivot_longer(cols = c(starts_with("total"), starts_with("n_change"), starts_with("pct"), starts_with("cagr")),
+               names_to = "variable",
+               values_to = "value")
+  
+```
+
+```{r fig.height=16, fig.width=10}
+#| label: fig-hisp-count
+#| fig-cap: "NC population: hispanic and non-hispanic by county"
+#| fig-height: 16
+#| fig-width: 20
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot <- d_hisp_county_long |>
+  filter(variable %in% c("total_hisp", "total_hisp_non"))
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = variable, color = variable)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = variable), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_wrap( ~ county, ncol = 10, scales = "free_y") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Hispanic and non-hispanic population in NC counties (2000 to 2020)", 
+       #subtitle = "Note: 'two or more races' not available for 1970",
+       x = NULL,
+       y = "Number of people (Y axis varies)",
+       fill = NULL, #"Race",
+       color = NULL, #"Race",
+       caption = my_caption)
+
+```
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-race-count-geofacet
+#| fig-cap: "NC hispanic and non-hispanic population by county (approximate geographical position)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+data_for_plot <- d_hisp_county_long |>
+  filter(variable %in% c("total_hisp", "total_hisp_non")) |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county))
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = variable, color = variable)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = variable), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_geo( ~ county,
+             scales = "free_y",
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(3.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Hispanic and non-hispanic popluation in NC counties (2000 to 2020)", 
+       x = NULL,
+       y = "Number of people (Y axis varies)",
+       fill = NULL,
+       color = NULL,
+       caption = my_caption)
+
+```
+
+<br>
+
+```{r fig.height=16, fig.width=10}
+#| label: fig-hisp-pct
+#| fig-cap: "Hispanic and non-hispanic percentage of population in NC counties"
+#| fig-height: 16
+#| fig-width: 20
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot <- d_hisp_county_long |>
+  filter(variable %in% c("pct_hisp", "pct_hisp_non"))
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = variable, color = variable)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = variable), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_wrap( ~ county, ncol = 10) +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Hispanic and non-hispanic percentage of population in NC counties (2000 to 2020)", 
+       x = NULL,
+       y = "Percent of population",
+       fill = NULL, 
+       color = NULL, 
+       caption = my_caption)
+
+```
+
+<br>
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-hisp-pct-geofacet
+#| fig-cap: "Hispanic and non-hispanic percentage of population in NC counties (approximate geographical position)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+data_for_plot <- d_hisp_county_long |>
+  filter(variable %in% c("pct_hisp", "pct_hisp_non")) |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county))
+
+data_for_plot |>
+  filter(!is.na(value)) |>
+  ggplot(aes(y = value, x = year, fill = variable, color = variable)) +
+  geom_area(alpha = 0.6, position = position_stack(reverse = TRUE)) +
+  geom_line(aes(group = variable), position = position_stack(reverse = TRUE),
+            show.legend = FALSE) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(min(data_for_plot$year) - 5, max(data_for_plot$year) + 5)) +
+  facet_geo( ~ county,
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(3.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Hispanic and non-hispanic percentage of population in NC counties (2000 to 2020)", 
+       x = NULL,
+       y = "Percent of population",
+       fill = NULL,
+       color = NULL,
+       caption = my_caption)
+
+```
+
+<br>
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-hisp-pct-state
+#| fig-cap: "Hispanic percent of county population (1970 - 2020)"
+#| fig-height: 6
+#| fig-width: 8
+#| column: screen-inset-right
+#| warning: false
+
+
+data_for_plot <- d_hisp_county_long |>
+  st_drop_geometry() |>
+  filter(variable %in% c("pct_hisp", "pct_hisp_non")) |>
+  inner_join(county_region_df,
+             by = join_by("county")) |>
+  group_by(variable)
+
+data_for_plot_mean <- d_hisp_county |>
+  st_drop_geometry() |>
+  select(county, year, total, total_hisp, total_hisp_non) |>
+  summarize(pct_hisp_mean = sum(total_hisp, na.rm = TRUE) / sum(total),
+         pct_hisp_non_mean = sum(total_hisp_non, na.rm = TRUE) / sum(total),
+         .by = "year"
+  ) |>
+  pivot_longer(
+    cols = c(pct_hisp_mean, pct_hisp_non_mean),
+    names_to = "variable",
+    values_to = "value"
+  ) |>
+  mutate(variable = case_when(
+    variable == 'pct_hisp_mean'             ~ "Percent Hispanic",
+    variable == 'pct_hisp_non_mean'         ~ "Percent not Hispanic",
+    TRUE                                    ~ "ERROR"
+  ))
+
+label_for_plot <- d_hisp_county |>
+  st_drop_geometry() |>
+  ungroup() |>
+  filter(year == max(year)) |>
+  select(year, county, total, total_hisp, total_hisp_non, pct_hisp, pct_hisp_non) |>
+  summarize(y_max_hisp = max(total_hisp / total),
+            y_max_hisp_non = max(total_hisp_non / total),
+            year  = max(year),
+            total = sum(total),
+            total_hisp = sum(total_hisp),
+            total_hisp_non = sum(total_hisp_non),
+            pct_hisp = total_hisp / total,
+            pct_hisp_non = total_hisp_non / total,
+            ) |>
+  pivot_longer(cols = starts_with(c("pct_")), names_to = "pct_variable", values_to = "pct_value") |>
+  pivot_longer(cols = starts_with(c("total_hisp")), names_to = "hisp_variable", values_to = "hisp_value") |>
+  pivot_longer(cols = starts_with(c("y_max")), names_to = "ymax", values_to = "y_value") |>
+  filter((pct_variable == "pct_hisp" & ymax == "y_max_hisp" & hisp_variable == "total_hisp") | 
+           (pct_variable == "pct_hisp_non" & ymax == "y_max_hisp_non" & hisp_variable == "total_hisp_non")) |>
+  rename(variable = pct_variable) |>
+  mutate(variable = case_when(
+    variable == 'pct_hisp'             ~ "Percent Hispanic",
+    variable == 'pct_hisp_non'         ~ "Percent not Hispanic",
+    TRUE                               ~ "ERROR"
+  ))
+
+data_for_plot |>
+  filter(!is.na(value),
+         variable %in% c("pct_hisp", "pct_hisp_non")) |>
+  mutate(variable = case_when(
+    variable == 'pct_hisp'             ~ "Percent Hispanic",
+    variable == 'pct_hisp_non'         ~ "Percent not Hispanic",
+    TRUE                               ~ "ERROR"
+  )) |>
+  ggplot() +
+  geom_line(aes(year, value, group = county, color = region), 
+            #color = "black",
+            linewidth = 0.5, 
+            alpha = 0.25,
+            na.rm = TRUE) +
+  # geom_smooth(aes(year, value), 
+  #           se = FALSE, formula = 'y ~ x', method = 'lm', span = 0.7,
+  #           linewidth = 1.5, alpha = 1,
+  #           na.rm = TRUE) +
+  geom_line(data = data_for_plot_mean,
+            aes(year, value), color = "blue", size = 1.5) +
+  geom_richtext(
+    data = label_for_plot,
+    aes(label = glue("NC in {year}: {round(hisp_value / 1e6, digits = 1)} M ({percent(pct_value, accuracy = 0.1)})"), x = 2002, y = y_value),
+    fill = "white", label.color = "white", # remove background and outline
+    #label.padding = grid::unit(rep(0, 4), "pt") # remove padding
+    size = 3, hjust = 0
+  ) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
+  scale_y_continuous(labels = percent_format()) +
+  # scale_color_viridis_d(end = 0.8) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_manual(values = region_colors$color) +
+  facet_wrap(~ variable, scales = "free_y") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(title = "Hispanic as percent of county population",
+       subtitle = "Each line is one NC county; thick blue line is whole state",
+       x = NULL,
+       y = "Percent of hispanic population (Y axis varies)",
+       color = NULL,
+       caption = my_caption)
+```
+
+<br>

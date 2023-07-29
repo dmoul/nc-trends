@@ -1,0 +1,1256 @@
+# NC education
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R")
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+# library(geofacet)
+# library(ggtext)
+# library(geomtextpath)
+# library(broom)
+
+theme_set(theme_light())
+
+```
+
+```{r}
+
+nc_city_boundaries <- tar_read(nc_city_boundaries)
+
+county_region_df <- tar_read(nc_county_region_mapping)
+
+nc_county_boundaries <- tar_read(nc_county_boundaries) |>
+  inner_join(
+    county_region_df,
+    by = "county"
+  )
+
+urban_crescent_boundary <- nc_county_boundaries |>
+  filter(county %in% urban_crescent) |>
+  summarize(boundary = st_union(geometry))
+
+coastal_boundary <-  nc_county_boundaries |>
+  filter(county %in% coastal) |>
+  summarize(boundary = st_union(geometry))
+
+mountain_boundary <- nc_county_boundaries |>
+  filter(county %in% mountain) |>
+  summarize(boundary = st_union(geometry))
+
+manufacturing_boundary <- nc_county_boundaries |>
+  filter(county %in% manufacturing) |>
+  summarize(boundary = st_union(geometry))
+
+# agriculture boundary is everything else
+
+nc_state_boundary <- st_union(nc_county_boundaries)
+nc_state_boundary_sf <- st_as_sf(nc_state_boundary)
+
+```
+
+```{r}
+#| eval: false
+
+df_income <- tar_read(pop_race)  |>
+  filter(str_detect(new_var, "^i_")) |>
+  arrange(year, county, new_var) |>
+  group_by(county, year) |>
+  mutate(implied_people_per_household = value[[1]] / value[[2]]) |>
+  ungroup() |>
+  left_join(county_region_df,
+            by = "county")
+
+df_income_cagr <- df_income |>
+  filter(!is.na(value)) |>
+  arrange(county, year) |>
+  group_by(county, new_var) |>
+  mutate(cagr = (value / lag(value))^(1 / (year - lag(year))) - 1) |>
+  ungroup()
+
+```
+
+```{r}
+
+cutoff_year <- 2019 # stop here since during pandemic some reporting was options
+focus_year <- 2019
+
+```
+
+```{r}
+#| include: false
+
+# downloaded from https://www.dpi.nc.gov/data-reports/school-report-cards/school-report-card-resources-researchers on 2023-01-17
+# for context see https://www.dpi.nc.gov/data-reports/school-report-cards/frequently-asked-questions
+
+# from Data-Dictionary-202206.xlsx the following subset:
+src_tables <- readxl::read_xlsx("./data/school-report-card/Data-Dictionary-202206-dmoul.xlsx",
+                  sheet = "TABLE INDEX") |>
+  filter(dmoul_select == 1)
+
+# see also the "CODE DEFINITIONS" tab in the above
+
+# see also 
+src_code_descriptions <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_code_desc.xlsx")
+
+```
+
+```{r}
+#| include: false
+
+# Q: Where can I map agency codes to school names or county? (county is more relevant)
+# Q: Local Education Agencies (LEAs) - are these districts or schools? Districts
+  
+src_location_tmp <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_location.xlsx",
+                                  col_types = "text") |>
+  filter(year == as.character(focus_year),
+         category_code %in% c("H", "T", "A")) # High school, Middle + High, Elementary + Middle + High
+         
+src_location <- src_location_tmp |>
+  filter(agency_level == "SCH",
+         designation_type == "P", # public schools
+         #lea_code != "CH", # exclude charter schools and those not affiliate with school district
+         school_type == "Regular School"
+         ) |>
+  select(year, agency_code, name, county, city, zip, lea_code, category_code, grade_span, school_type) |>
+  mutate(year = as.numeric(year))
+
+src_lea <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_location.xlsx",
+                                  col_types = "text") |>
+  mutate(year = as.numeric(year)) |>
+  filter(year == focus_year,
+         agency_level == "LEA") |>
+  select(year, agency_code, name, county, zip, url)
+
+# will need to correct for some differences in names of the school districts before joining dfs
+src_lea_mapping_tigris <- read_csv("./data/school-report-card/school-district-name-mapping.csv",
+                                   skip = 2) |>
+  mutate(name = str_squish(name),
+         school_district_name = str_squish(school_district_name))
+
+```
+
+```{r}
+#| label: prepare-median-income
+#| include: false
+
+# 2019 total estimates
+
+v19 <- load_variables(2019, "acs5", cache = TRUE) |>
+  select(-geography) 
+
+my_vars <- c(
+  "B07011_001", #Estimate!!Median income in the past 12 months --!!Total:
+  #"B06011_001", #Estimate!!Median income in the past 12 months --!!Total:
+  #"B19326_001", #Estimate!!Median income in the past 12 months (in 2019 inflation-adjusted dollars) --!!Total (dollars):
+  # I confirmed that all three of the above median income variables return the same amount, so I need only one
+  "B19301_001", #Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars))
+  "B20004_001", #Estimate!!Total:, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER""
+  "B20004_002", #Estimate!!Total:!!Less than high school graduate, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_003", #Estimate!!Total:!!High school graduate (includes equivalency), MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_004", #Estimate!!Total:!!Some college or associate's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_005", #Estimate!!Total:!!Bachelor's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_006" #Estimate!!Total:!!Graduate or professional degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+)
+
+v19_subset <- v19 |>
+  filter(name %in% my_vars) |> # str_detect(concept, "^SEX BY AGE")) |>
+  mutate(label = str_remove_all(label, ":")) |>
+  separate(label,
+           into = c("var_type", "variable", "description"),
+           sep = "!!",
+           fill = "right") |>
+  mutate(across(.cols =  where(is.character), str_squish),
+         description = case_when(
+           name == "B20004_001"    ~ "Median income - all education levels",
+           name == "B07011_001"    ~ "Median income in the past 12 months",
+           name == "B19301_001"    ~ "Per capita income in the past 12 months",
+           TRUE                    ~ description
+         ),
+         var_new = case_when(
+           description == "Median income in the past 12 months"     ~ "med_income",
+           description == "Per capita income in the past 12 months" ~ "pci",
+           description == "Median income - all education levels"    ~ "all_years_ed",
+           description == "Less than high school graduate"          ~ "10_years_ed",
+           str_detect(description, "High school graduate")          ~ "12_years_ed",
+           str_detect(description, "Some college")                  ~ "14_years_ed",
+           str_detect(description, "Bachelor's degree")             ~ "16_years_ed",
+           description == "Graduate or professional degree"         ~ "19_years_ed",
+           TRUE                                                     ~ "ERROR"
+         )
+         ) |>
+  select(-variable)
+
+d_ed_income <- get_acs(geography = "county", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars,
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_extract(NAME, "^.+(?= County)"),
+         years_ed = if_else(str_detect(variable, "B20004"),
+                            as.numeric(str_extract(var_new, "^\\d+")),
+                            NA_real_),
+         var_new = if_else(!is.na(years_ed),
+                           "ed_attainment",
+                           var_new)
+         ) |>
+  rename(county = NAME)
+
+# TODO use this when comparing school district data
+
+d_ed_income_sch_district <- get_acs(geography = "school district (unified)", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars,
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_remove(NAME, ", North Carolina"),
+         years_ed = if_else(str_detect(variable, "B20004"),
+                            as.numeric(str_extract(var_new, "^\\d+")),
+                            NA_real_),
+         var_new = if_else(!is.na(years_ed),
+                           "ed_attainment",
+                           var_new)
+         ) |>
+  rename(school_district_name = NAME)
+
+
+# TODO make use of this, for example to compare racial mix in schools
+
+my_vars_race <- v19 |>
+  filter(concept == "RACE") |>
+  filter(name %in% paste0("B02001_00", 1:8)) |>
+  pull(name)
+
+d_race_by_school_district <- get_acs(geography = "school district (unified)", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              variables = my_vars_race,
+              geometry = FALSE,
+              cache_table = TRUE
+              ) |>
+  left_join(v19,
+             by = c("variable" = "name")) |>
+  replace_na(list(moe = 0)) |> # total pop has no moe 
+  rename(var_label = label) |>
+  mutate(var_label = str_remove(var_label, ":*$"),
+         var_label = str_extract(var_label, "(\\w[ ]?)+$"),
+         var_label = case_when(
+           str_detect(var_label, "White")      ~ "white",
+           str_detect(var_label, "Black")      ~ "black",
+           str_detect(var_label, "Asian")      ~ "asian_pac",
+           str_detect(var_label, "Pacific")      ~ "asian_pac",
+           str_detect(var_label, "Indian")      ~ "native_am",
+           str_detect(var_label, "other")      ~ "two_plus",
+           str_detect(var_label, "Two")      ~ "two_plus",
+           .default = str_to_lower(var_label)
+         ),
+         NAME = str_remove(NAME, ", North Carolina$")) |>
+  rename(school_district_name = NAME) |>
+  summarize(estimate = sum(estimate),
+            moe = moe_sum(moe, estimate = estimate),
+            .by = c(GEOID, school_district_name, concept, var_label)
+            ) |>
+  mutate(pct_pop = estimate / estimate[var_label == "total"],
+         moe_pct_pop = moe_ratio(num = estimate, denom = max(estimate), moe_num = moe, moe_denom = 1),
+         .by = c(GEOID, school_district_name, concept)
+         ) |>
+  rename(pop = estimate,
+         moe_pop = moe) |>
+  left_join(src_lea_mapping_tigris,
+            by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name)) |>
+  left_join(src_lea,
+             by = "name") |>
+  filter(!is.na(county)) |>
+  mutate(school_district_name = name) |>
+  select(-name) |>
+  left_join(county_region_df,
+            by = "county")
+
+```
+
+```{r}
+#| include: false
+
+# school district boundaries
+# https://nces.ed.gov/programs/edge/Geographic/DistrictBoundaries
+
+income_by_ed_nc_state <- get_acs(geography = "state",
+              state = "NC",
+              year = 2019,
+              variables = my_vars, #"B01003_001",
+              geometry = FALSE,
+              cache_table = TRUE) |>
+  inner_join(v19_subset,
+             by = c("variable" = "name"))
+
+income_by_ed_nc_school_districts_tmp <- get_acs(geography = "school district (unified)",
+              state = "NC",
+              year = 2019,
+              variables = my_vars,
+              geometry = TRUE,
+              cache_table = TRUE) |>
+  mutate(school_district_name = str_remove(NAME, ", North Carolina$")) |>
+  inner_join(v19_subset,
+             by = c("variable" = "name")) |>
+  left_join(src_lea_mapping_tigris,
+              by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name)) |>
+  left_join(src_lea,
+             by = "name") |>
+  filter(!is.na(county)) |>
+  left_join(county_region_df,
+            by = "county") |>
+  st_transform(crs = my_proj)
+
+# There are six cases of income estimate by school district not being available for (1) Less than high school graduate
+# or (2) Graduate or professional degree, presumably due to an insufficient number of people being in the group
+
+
+income_by_ed_nc_school_districts <- income_by_ed_nc_school_districts_tmp |>
+  st_drop_geometry()
+
+nc_school_districts_boundaries <- income_by_ed_nc_school_districts_tmp |>
+  select(GEOID, school_district_name, agency_code, county, region) |>
+  distinct(school_district_name, .keep_all = TRUE)
+
+```
+
+```{r}
+#| include: false
+
+# since measure changed starting in 2018 we only have 2018 and 2019 data available, so I'll use 2019 only
+src_spg <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_acc_spg2.xlsx") |>
+  filter(year == focus_year) |>
+  select(year, agency_code, subgroup, spg_score, spg_grade) |>
+  inner_join(src_location |>
+             select(-year),
+             by = "agency_code") |>
+  inner_join(county_region_df,
+             by = "county")
+
+subgroups_subset <- c("AM7", "AS7", "BL7", "HI7", "MU7", "WH7", "EDS", "SWD", "AIG", "ALL")
+
+```
+
+```{r}
+#| include: false
+
+# using this for n_students mostly (since using performance composite is only one component in the school performance grade)
+
+src_perf_composite <- readr::read_table ("./data/school-report-card/SRC-Datasets-2022/rcd_acc_pc.txt") |>
+  filter(year == focus_year,
+         subject == "EOC", # all 9-12 tests
+         standard == "CCR", # college and career ready (alternatively could use GLP: grade level proficiency)
+         !is.na(pct),
+         subgroup %in% subgroups_subset
+         ) |>
+  inner_join(src_location |>
+             select(-year),
+             by = "agency_code") |>
+  select(subgroup, school_name = name, spc_score = pct, n_student = den, year, 
+         school_agency_code = agency_code, lea_code, category_code, grade_span)
+
+```
+
+```{r}
+
+spc_by_subgroup_tmp <- src_spg |>
+  filter(subgroup %in% subgroups_subset) |>
+  rename(school_name = name,
+         school_agency_code = agency_code) |>
+  inner_join(
+    src_perf_composite |>
+      filter(subgroup %in% subgroups_subset) |>
+      select(-c(lea_code, category_code, grade_span)),
+    by = c("subgroup", "school_agency_code", "school_name", "year"),
+    relationship = "many-to-many"
+  ) |>
+  mutate(pct_student = n_student / max(n_student),
+         .by = school_agency_code) |>
+  left_join(
+    income_by_ed_nc_school_districts |>
+      mutate(years_ed = str_extract(var_new, "^\\d{2}")) |>
+      filter(!is.na(years_ed)) |>
+      select(agency_code, school_district_name, income = estimate, moe, description, var_new),
+    join_by(lea_code == agency_code),
+    relationship = "many-to-many"
+  ) |>
+  mutate(years_ed = as.numeric(str_extract(var_new, "^\\d{2}")))
+
+income_mean <- spc_by_subgroup_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(income_mean = mean(income, na.rm = TRUE)) |>
+  pull()
+  
+years_ed_mean <- spc_by_subgroup_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(years_ed_mean = mean(years_ed, na.rm = TRUE)) |>
+  pull()
+
+spc_by_all <- spc_by_subgroup_tmp |>
+  filter(subgroup == "ALL") |>
+  mutate(income_centered = income - income_mean,
+         years_ed_centered = years_ed - years_ed_mean)
+
+spc_by_subgroup <- spc_by_subgroup_tmp |>
+  #filter(subgroup != "ALL") |> # Keep or drop this?
+  mutate(income_centered = income - income_mean,
+         years_ed_centered = years_ed - years_ed_mean)
+
+```
+
+
+<br>
+
+<blockquote>
+*“The mark of a civilized man is the capacity to read a column of numbers and weep.”*
+
+― Bertrand Russell
+</blockquote>
+
+<br>
+
+
+## Introduction
+
+In this chapter we will look at NC public schools' racial/enthic mix and school performance grade scores.
+
+The NC Department of Public Instruction (NC DPI) tracks `r comma(nrow(src_location_tmp))` schools that award high school diplomas. They include public "regular schools" that are part of a county or city school district, alternate schools (mostly public, some private), career or technical schools (mostly public), and private charter schools.
+
+For this analysis I focus on the `r comma(nrow(src_location))` public "regular schools" that are part of a county or city public school district and which award high school diplomas. There are three sets of grade levels in these schools:
+
+```{r}
+
+category_labels <- c("High school grade levels",
+                     "High school and middle school grade levels",
+                     "All grade levels")
+
+src_location |>
+  mutate(school_category = case_when(
+    category_code == "H"     ~ category_labels[[1]],
+    category_code == "T"     ~ category_labels[[2]],
+    category_code == "A"     ~ category_labels[[3]],
+    .default = "ERROR"
+  )) |>
+  count(school_category) |>
+  arrange(desc(n)) |>
+  gt() |>
+  tab_header(md(glue("**There are {nrow(src_location)} regular public schools in NC",
+                     "<br>associated with a public county or city school district",
+                     "<br>awarding high school diplomas**")))
+  
+  
+```
+
+<br>
+
+```{r}
+#| label: prepare-nc-map-school-districts
+
+if(!file.exists("./figures/nc-map-school-districts.png")) {
+  
+  data_for_plot <- inner_join(
+    nc_school_districts_boundaries,
+    src_location |>
+      select(-agency_code, -county),
+    by = c("agency_code" = "lea_code")) |>
+    count(school_district_name)
+  
+  p1 <- ggplot() +
+    geom_sf(data = nc_state_boundary,
+            color = "grey50", fill = NA, size = 1) +
+    geom_sf(data = data_for_plot,
+            aes(fill = n),
+            color = "grey50", alpha = 0.5, size = 0.1) +
+    scale_fill_continuous(type = "viridis",
+                         trans = "log2") +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = "NC public school districts",
+         subtitles = glue("Most public school districts follow county borders",
+                          ", and most city school districts exist within a county",
+                          "\nWhite areas are not state school districts",
+                          " (left to right: Cherokee Reservation, Fort Bragg, Camp Lejeune)"),
+         x = NULL,
+         y = NULL,
+         fill = "Number of schools\ngraduating seniors",
+         caption = glue(my_caption)
+    )
+
+ggsave("./figures/nc-map-school-districts.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+```
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-school-districts
+#| fig-cap: "Map of NC school districts colored by number of schools graduating seniors"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+knitr::include_graphics("./figures/nc-map-school-districts.png")
+
+```
+
+<br>
+
+## Population by racial group
+
+The U.S. Census API for the American Community Survey (ACS) provides data at various levels of geographic aggregation, one of which is "school district (unified)". I use that below for population counts, because it simplifies [Comparing racial proportions in communities and schools]. I use 5-year ACS results through 2019.
+
+### A note on margins of error when groups are small
+
+Unlike the decennial census, most reported ACS data are estimates. The Census Bureau helpfully reports the associated Margin of Error at a level of uncertainly. The default, which I use, is 90%, meaning if the survey were repeated very many times, 90% of the times the results would be within the $estimate \pm moe$. The smaller the group, the larger the MOE. Since the population of the subgroups is small in most school district catchment areas, large margin of error makes comparisons difficult for groups other than White and Black.
+
+Nonetheless I will press on and make plots and observations. Due to small numbers I combine some categories:
+
+* *Asian and Hawaiian* and *Pacific Islander* into `asian_pac` 
+* *Other single race* and *two or more races* into `two_plus`
+
+```{r}
+moe_size_pop <- d_race_by_school_district |>
+  filter(moe_pop != 0,
+         var_label != "total") |>
+  mutate(moe_ratio = moe_pop / pop)
+
+moe_size_pop |>
+  filter(!is.infinite(moe_ratio)) |>
+  reframe(
+    moe_ratio_median = median(moe_ratio, na.rm = TRUE),
+    moe_ratio_avg = mean(moe_ratio, na.rm = TRUE),
+    .by = var_label
+  ) |>
+  arrange(moe_ratio_median) |>
+  rename(subgroup = var_label) |>
+  gt() |>
+  tab_header(md(glue("**Summary measures of margin of error in<br>racial population subgroup by school district**",
+                     "<br>Five year ACS 2019 race population by school district",
+                     "<br>90% MOE is estimate +/- moe",
+                     "<br>moe_ratio = moe / estimate"))) |>
+  fmt_percent(columns = 2:3, decimals = 0)
+  
+```
+
+<br>
+
+There are of course distributions of MOE ratios:
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-moe-ratio-subgroups-in-community
+#| fig-cap: "Margin of Error ratio in racial/ethnic subgroup estimates by school district catchment area"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+p1 <- ggplot(moe_size_pop) +
+  geom_density(aes(moe_ratio, color = var_label, fill = var_label),
+            na.rm = TRUE, alpha= 0.15) +
+  # geom_hline(yintercept = 0.5, lty = 2, linewidth = 0.25) +
+  scale_x_log10(labels = label_percent(accuracy = 0.1),
+                breaks = 10^c(-3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1)) +
+  scale_y_continuous(#labels = label_percent(accuracy = 1),
+                     # breaks = c(0, 0.2, 0.4, 0.5, 0.6, 0.8, 1),
+                     expand = expansion(mult = c(0, 0.025))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    # title = "MOE Ratio: moe / estimate by racial group",
+    subtitle = "Density",
+    x = "MOE ratio (log10 scale)",
+    y = "Density",
+    color = NULL,
+    fill = NULL
+    #caption = my_caption
+  )
+
+p2 <- ggplot(moe_size_pop) +
+  stat_ecdf(aes(moe_ratio, color = var_label),
+            na.rm = TRUE) +
+  geom_hline(yintercept = 0.5, lty = 2, linewidth = 0.25) +
+  scale_x_log10(labels = label_percent(accuracy = 0.1),
+                breaks = 10^c(-3, -2.5, -2, -1.5, -1, -0.5, 0, 0.5, 1)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1),
+                     breaks = c(0, 0.2, 0.4, 0.5, 0.6, 0.8, 1),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.85) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    # title = "MOE Ratio: moe / estimate by racial group",
+    subtitle = "Cumulative distribution",
+    x = "MOE ratio (log10 scale)",
+    y = "Percent of all school districts",
+    color = NULL#,
+    #caption = my_caption
+  )
+
+p1 + p2 +
+  plot_annotation(title = "MOE Ratio: moe / estimate by racial group",
+    subtitle = "Naturally the largest groups have the lowest margin of error",
+                  caption = "Source: NC Dept of Instruction; plot: Daniel Moul",
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+<br>
+
+## Racial/ethnic mix in schools
+
+Since the three largest subgroups are White, Black, and Hispanic, I will give them extra focus. Recall that the U.S. Census bureau considers White and Black to be racial characteristics while Hispanic / non-Hispanic are ethnic categories. Hispanic students may be any race (or multiple races): white, black, other single race, or two or more races.
+
+@fig-black-by-white-by-hispanic-density shows the distribution of these groups as a percent of school population, both as density and empirical cumulative distribution plots.
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-black-by-white-by-hispanic-density
+#| fig-cap: "School racial mix"
+#| fig-height: 6
+#| fig-width: 9
+#| column: screen-inset-right
+
+data_for_plot <- spc_by_subgroup |>
+  filter(subgroup %in% c("BL7", "HI7", "WH7")) |>
+  mutate(subgroup = case_when(
+    subgroup == "BL7"    ~ "Black",
+    subgroup == "HI7"    ~ "Hispanic",
+    subgroup == "WH7"    ~ "White",
+    .default = "ERROR"
+  )) 
+
+p1 <- data_for_plot |>
+  ggplot() +
+  geom_density(aes(pct_student, color = subgroup, fill = subgroup), alpha = 0.15) +
+  scale_x_continuous(label = label_percent(),
+                     expand = expansion(mult = c(0, 0.025))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.025))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  #coord_cartesian(ylim = c(0, NA)) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = NULL,
+    subtitle = glue("Density plot"),
+    x = "Percent of school student population",
+    y = "Density",
+    color = "Subgroup",
+    fill = "Subgroup"
+  )
+
+p2 <- data_for_plot |>
+  ggplot() +
+  stat_ecdf(aes(pct_student, color = subgroup)) +
+  scale_x_continuous(label = label_percent(),
+                     expand = expansion(mult = c(0, 0.025))) +
+  scale_y_continuous(label = label_percent(),
+                     expand = expansion(mult = c(0, 0.025))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  #coord_cartesian(ylim = c(0, NA)) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = NULL,
+    subtitle = glue("Cumulative distribution plot"),
+    x = "Percent of school student population",
+    y = "Percent of school districts",
+    color = "Subgroup",
+    fill = "Subgroup"
+  )
+
+p1 + p2 +
+  plot_annotation(title = 'Racial/ethnic mix in NC schools',
+                  # subtitle = glue("2019",
+                  #                 "; n = {comma(n_schools)} schools"),
+                  caption = "Source: NC Dept of Instruction; plot: Daniel Moul",
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+<br>
+
+@fig-black-by-white-by-hispanic-density lacks one important aspect: in what proportions are these three subgroups distributed in each school?
+
+We can answer that question using ternary diagrams, which show the relationship among three variables, in this case: White, Black, and Hispanic students as a percent of each school's student body. Most noticeable in @fig-black-by-white-by-hispanic below are the points aligned with the sides of the triangle. For example, the number of black students is "masked" for schools where there are less than 10 black students taking the End of Course (EOC) exams^["Data is masked if there are fewer than 10 records." Page 14. <https://www.dpi.nc.gov/media/6931/download> ], and a point representing this lays along the left edge representing zero percent black. Similarly, points aligned along the right of the triangle are schools with masked number of White students.
+
+```{r}
+#| include: false
+
+library(ggtern)
+
+```
+
+```{r}
+data_for_plot <- spc_by_subgroup |>
+  filter(subgroup %in% c("BL7", "WH7", "HI7")) |>
+  select(school_agency_code, school_name, school_district_name, subgroup, pct_student, region) |>
+  distinct(school_agency_code, subgroup, .keep_all = TRUE) |>
+  pivot_wider(names_from = "subgroup", values_from = "pct_student") |>
+  replace_na(list(WH7 = 0.005, BL7 = 0.005, HI7 = 0.005)) |>
+  rename(W = WH7,
+         B = BL7,
+         H = HI7) |>
+  mutate(n_schools_in_region = n_distinct(school_agency_code),
+         .by = "region") |>
+  mutate(region_label = glue("{region} (n={n_schools_in_region})"))
+
+```
+
+```{r fig.height=6, fig.width=9}
+#| label: fig-black-by-white-by-hispanic
+#| fig-cap: "School racial mix - ternary"
+#| fig-height: 6
+#| fig-width: 9
+#| column: screen-inset-right
+
+p1 <- ggtern(data = data_for_plot, aes(W, H, B)) +
+  geom_point(aes(color = region), size = 1, alpha = 0.8) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_gradient(trans = "log2") +
+  theme(legend.position = "right",
+        tern.panel.background = element_rect(fill = "grey97"),
+          ) +
+  theme_showarrows() +
+  guides(color = guide_legend(override.aes = c(size = 3)))
+
+p1 + labs(title = glue("School racial/ethinc mix by region: portion (W)hite, (B)lack, and (H)ispanic",
+                       "\n "),
+          color = NULL,
+          fill = "Number of\nschools",
+          Tarrow = "Hispanic",
+          Larrow = "White",
+          Rarrow = "Black")
+
+```
+
+<br>
+
+Some points are overplotted. Binning them and coloring hexagons based on the $log_2(count)$ of points in each bin reveals the level of overplotting. The two hexagons with the highest counts are schools that are nearly all White and nearly all Black. The colored lines are regional LOESS regression lines^[<https://en.wikipedia.org/wiki/Local_regression> ]
+
+```{r fig.height=6, fig.width=9}
+#| label: fig-black-by-white-by-hispanic-fill
+#| fig-cap: "School racial mix - ternary"
+#| fig-height: 6
+#| fig-width: 9
+#| column: screen-inset-right
+
+p1 <- ggtern(data = data_for_plot, aes(W, H, B)) +
+  geom_mask() +
+  geom_hex_tern(binwidth=0.1, alpha = 0.6) +
+  geom_point(aes(color = region), size = 1, color = "white", alpha = 0.8, show.legend = FALSE) + #
+  geom_smooth_tern(aes(color = region), method = 'loess', se = FALSE) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_gradient(trans = "log2") +
+  theme(legend.position = "right",
+        tern.panel.background = element_rect(fill = "grey97"),
+          ) +
+  theme_showarrows() +
+  guides(color = guide_legend(override.aes = c(linewidth = 3)))
+
+p1 + labs(title = glue("School racial/ethinc mix by region: portion (W)hite, (B)lack, and (H)ispanic",
+                       "\n "),
+          color = NULL,
+          fill = "Number of\nschools",
+          Tarrow = "Hispanic",
+          Larrow = "White",
+          Rarrow = "Black")
+
+```
+
+<br>
+
+Faceting the ternary plots by region makes the patterns more visible.
+
+```{r fig.height=6, fig.width=9}
+#| label: fig-black-by-white-by-hispanic-facet
+#| fig-cap: "School racial mix - ternary"
+#| fig-height: 6
+#| fig-width: 9
+#| column: screen-inset-right
+
+
+p1 <- ggtern(data = data_for_plot, aes(W, H, B)) +
+  geom_point(aes(color = region), alpha = 0.6, show.legend = FALSE) +
+  geom_smooth_tern(aes(color = region), method = 'loess', se = FALSE, color = "white", size = 1) + #
+  geom_smooth_tern(aes(color = region), method = 'loess', se = FALSE, size = 0.6) +
+  scale_color_manual(values = region_colors$color) +
+  facet_wrap( ~ region_label) +
+  theme(legend.position = c(0.8, 0.2),
+        tern.panel.background = element_rect(fill = "grey97"),
+          ) +
+  theme_showarrows() +
+  guides(color = guide_legend(override.aes = c(linewidth = 3)))
+
+p1 + labs(title = glue("School racial/ethinc mix by region: portion (W)hite, (B)lack, and (H)ispanic",
+                       "\n "),
+          color = NULL,
+          Tarrow = "Hispanic",
+          Larrow = "White",
+          Rarrow = "Black")
+
+```
+
+<br>
+
+```{r}
+# workaround to reset some wonkiness with ggtern
+# see https://github.com/nicholasehamilton/ggtern/issues/50
+# unloadNamespace("ggtern")
+# 
+# library(ggplot2)
+theme_set(theme_light()) 
+
+# TODO: this workaround isn't working, so (for now) I removed "caption =" from the plots below.
+
+```
+
+```{r}
+d_race_in_school_district_wide <- spc_by_subgroup |>
+  distinct(school_agency_code, subgroup, .keep_all = TRUE) |>
+  #select(-(income:years_ed_centered))
+  summarize(n_student = sum(n_student, na.rm = TRUE),
+            .by = c(lea_code, school_district_name, subgroup)) |>
+  filter(subgroup %in% c("BL7", "WH7", "MU7", "ALL", "AS7", "AM7")) |>
+  mutate(var_subgroup = case_when(
+           str_detect(subgroup, "WH7")      ~ "white",
+           str_detect(subgroup, "BL7")      ~ "black",
+           str_detect(subgroup, "AS7")      ~ "asian_pac",
+           str_detect(subgroup, "AM7")      ~ "native_am",
+           str_detect(subgroup, "MU7")      ~ "two_plus",
+           str_detect(subgroup, "ALL")      ~ "total",
+           .default = "ERROR"
+         ),
+  ) |>
+  mutate(pct_student = n_student / n_student[subgroup == "ALL"],
+         .by = lea_code) |>
+  select(lea_code, school_district_name, var_subgroup, pct_student) |> #subgroup, 
+  #distinct(school_agency_code, var_subgroup, .keep_all = TRUE) |>
+  pivot_wider(names_from = "var_subgroup", values_from = "pct_student", names_prefix = "pct_student_") |>
+  mutate(tmp = 0.001) %>%
+  mutate(across(starts_with("pct_student_"), ~ coalesce(.x, tmp))) |>
+  left_join(src_lea_mapping_tigris,
+            by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name),
+         school_district_name = name) |>
+  select(-tmp, -name)
+  
+  
+```
+
+```{r}
+d_race_by_school_district_wide <- d_race_by_school_district |>
+  select(-c(pop, moe_pop, moe_pct_pop)) |>
+  pivot_wider(names_from = "var_label", values_from = "pct_pop", names_prefix = "pct_pop_") |>
+  mutate(tmp = 0.001) %>%
+  mutate(across(starts_with("pct_pop_"), ~ coalesce(.x, tmp))) |>
+  select(-tmp)
+
+d_race_pct_delta <- left_join(
+  d_race_in_school_district_wide,
+  d_race_by_school_district_wide,
+  join_by("lea_code" == "agency_code", "school_district_name")
+) |>
+  # negative value means community is under-represented in school
+  mutate(
+    pct_delta_white = pct_pop_white - pct_student_white,
+    pct_delta_black = pct_pop_black - pct_student_black,
+    pct_delta_asian_pac = pct_pop_asian_pac - pct_student_asian_pac,
+    pct_delta_native_am = pct_pop_native_am - pct_student_native_am,
+    pct_delta_two_plus = pct_pop_two_plus - pct_student_two_plus
+  )
+  
+```
+
+<br>
+
+## Comparing racial proportions in communities and schools
+
+White and black subgroups have the largest disparities in proportion of population in the schools compared to the communities aligned with school district boundaries. Two observations:
+
+1. In all regions and in nearly all school districts, whites are a larger proportion of the community than students in the public school district. 
+
+1. In the agricultural, manufacturing, and urban regions the proportion of black students exceeds the community in about half the school districts. 
+
+Are these dynamics due to the relative aging of the white population (and other subgroups being relatively younger with school-age children)? Family size? A higher proportion of white families sending their kids to private schools? Some other reason? Or a combination of reasons?
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-subgroup-delta-pop-school
+#| fig-cap: "Community and school racial mix"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+data_for_plot <- d_race_pct_delta |>
+  select(lea_code, school_district_name, region, starts_with("pct_delta_")) |>
+  pivot_longer(cols = starts_with("pct_delta_"), 
+               names_to = "pct_delta", values_to = "pct") 
+
+data_for_plot |>
+  mutate(mean_pct = mean(pct)) |>
+  ggplot() +
+    stat_ecdf(aes(pct, color = pct_delta),
+              pad = FALSE) +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(labels = label_percent()) +
+  facet_grid(~ region) +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top"
+  ) +
+  guides(color = guide_legend(override.aes = c(linewidth = 3))) +
+  labs(
+    title = "Comparing racial group proportion\nin communities and school districts",
+    x = "Percent difference (pct_community - pct_school)",
+    y = "Percent of all school districts",
+    subtitle = "2019; positive value means group makes up a larger proportion of the community than the school population"
+  )
+  
+```
+
+<br>
+
+## School performance grades {#sec-school-performance-grades}
+
+A condition of funding by the U.S. Department of Education is that schools report performance to hold them accountable to parents, their communities and the U.S. Department of Education. No Child Left Behind specified certain "accountability subgroups" for which performance had to be reported, if if targets were not met federal funding would be reduced. Amended in 2016 as part of the Every Student Succeeds Act (ESSA) the regulations were published in the Federal Register on Nov 29, 2016^[Federal Register / Vol. 81, No. 229 / Tuesday, November 29, 2016 / Rules and Regulations, page 86076 <https://thefederalregister.org/81-FR/86076> ]:,
+
+<blockquote>
+... requires each [State educational agency] SEA to have an accountability system that is State-determined and based on multiple indicators, including, but not limited to, at least one indicator of school quality or student success and, at a State’s discretion, an indicator of student growth. 
+</blockquote>
+
+Thus the NC Department of Public Instruction publishes [school report cards](https://www.dpi.nc.gov/data-reports/school-report-cards). I use data from 2019, because (1) the NC DPI's "analytic section" was decommissioned in 2020^[<https://www.dpi.nc.gov/data-reports/school-report-cards> ]; and (2) reporting certain data became optional during the COVID-19 pandemic^["For the 2020–21 school year, the U.S. Department of Education (USED) and the North Carolina General Assembly (Session Law 2021-130) waived requirements for reporting the school-level accountability model, School Performance Grades, including its indicators for achievement and growth. A condition of the federal waiver requires continued support for schools previously designated as Comprehensive Support and Improvement (CSI) and Targeted Support and Improvement (TSI). Likewise, Session Law 2021-130 requires continued support for schools identified as low performing based on data from 2018–19 school year."  <https://www.dpi.nc.gov/media/12854/download?attachment> ].
+
+The primary indicator of school performance I use below is the school performance score published by the North Carolina DPI Office of Accountability and Testing. The *Technical Guide for School Accountability and Testing Results*^[Technical Guide for School Accountability and Testing Results. August 2022. Page 3. <https://www.dpi.nc.gov/media/15552/open> ] defines the main components of the score as follows:
+
+<blockquote>
+1.4. School Performance Grade Indicators for High Schools
+
+The high school model applies the weights in the system, where growth is 20% of the model, and the remaining indicators, Academic Achievement and School Quality Student Success indicators, are 80%.
+
+The high school indicators making up 80% of the model are as follows:
+
+* End-of-Course Tests – Students that score at or above Level 3 on four End-of-Course
+* (EOC) assessments – NC Math 1, NC Math 3, English II, and Biology – are counted for performance. NC Math 1, NC Math 3, and English II are also counted for growth. Biology is not part of growth. The NCEXTEND1 is an alternate assessment for students with disabilities instructed in the NC Extended Content Standards and is included in performance only, not in growth.
+* Cohort Graduation Rate – The percentage of students who graduate within the defined cohort in four years or less.
+* English Learner Progress – Students who are classified as English earners take an English language attainment assessment which is included in the accountability model for students in grade ten.
+* Math Course Rigor – The percentage of grade twelve students passing the NC Math 3 course.
+* The ACT/WorkKeys – The percentage of grade twelve students meeting either the University of North Carolina System’s admissions minimum requirement on a college admissions assessment (a composite score of nineteen on The ACT) or who meet the standard, earning a certificate at the Silver, Gold, or Platinum level, on a nationally normed test of workplace readiness (ACT WorkKeys assessments).
+</blockquote>
+
+The NC DPI assigns grades based on the scores; I use the numerical scores instead, since they are more informative and are better suited for plotting and regression analysis.
+
+
+```{r}
+#| label: prepare-nc-map-spg
+
+if(!file.exists("./figures/nc-map-school-district-spg.png")) {
+  
+  # data_for_plot <- inner_join(
+  #   nc_school_districts_boundaries,
+  #   src_location |>
+  #     select(-agency_code, -county),
+  #   by = c("agency_code" = "lea_code")) |>
+  #   count(school_district_name)
+  
+  data_for_plot <- inner_join(
+    nc_school_districts_boundaries,
+    spc_by_all |>
+      summarize(spg_score_weighted = weighted.mean(spg_score, w = n_student),
+                .by = "lea_code"),
+    by = c("agency_code" = "lea_code"))
+  
+  p1 <- ggplot() +
+    geom_sf(data = nc_state_boundary,
+            color = "grey50", fill = NA, size = 1) +
+    geom_sf(data = data_for_plot,
+            aes(fill = spg_score_weighted),
+            color = "grey50", alpha = 0.5, size = 0.1) +
+    scale_fill_continuous(type = "viridis",
+                         #trans = "log2"
+                         ) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = "NC public school performance grade scores",
+         subtitles = glue("Scores are district-wide means, weighted by number of students in each school",
+                          "\nWhite areas are not state school districts",
+                          " (left to right: Cherokee Reservation, Fort Bragg, Camp Lejeune)"),
+         x = NULL,
+         y = NULL,
+         fill = "SPG score"#,
+         #caption = "Source: NC Dept of Instruction; plot: Daniel Moul"
+    )
+
+ggsave("./figures/nc-map-school-district-spg.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+```
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-spg-score
+#| fig-cap: "Map of NC school performance grade scores in 2019"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+knitr::include_graphics("./figures/nc-map-school-district-spg.png")
+
+```
+
+<br>
+
+The cumulative distribution plot of school performance scores plotted below are summarized by the school district (purple) and shown individually for all schools (green). As one would expect, the school district averages are not as extreme. Above the median there is a noticeable divergence between top-performing schools and school districts, which is a reminder that the performance of schools within a single school district can vary quite a lot.
+
+```{r fig.height=6, fig.width=9}
+#| label: fig-spg-score-ecdf
+#| fig-cap: "NC school performance grade scores in 2019 - density and cumulative distribution by school districts and schools"
+#| fig-height: 6
+#| fig-width: 9
+#| column: screen-inset-right
+
+data_by_school <-  spc_by_all |>
+  select(school_agency_code, lea_code, spg_score, region) |>
+  mutate(dataset = "Schools")
+
+data_by_school_district <- inner_join(nc_school_districts_boundaries,
+                                      spc_by_all |>
+                                        summarize(spg_score_weighted = weighted.mean(spg_score, w = n_student),
+                                                  .by = "lea_code"),
+                                      by = c("agency_code" = "lea_code")
+) |>
+  select(lea_code = agency_code, spg_score = spg_score_weighted, region) |>
+  mutate(dataset = "School districts")
+
+data_for_plot <- bind_rows(
+  data_by_school_district,
+  data_by_school
+) 
+  
+p1 <- data_for_plot |>
+  ggplot() +
+  # stat_ecdf(aes(spg_score, color = dataset)) +
+  # geom_hline(yintercept = 0.5, lty = 2, linewidth = 0.25) +
+  geom_density(aes(spg_score, color = dataset, fill = dataset),
+               alpha = 0.15) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.025))) +
+  scale_y_continuous(label = label_percent(),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  expand_limits(x = c(0, 100)) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    # title = "NC public school\nperformance grade scores",
+    # subtitle = glue("District scores are means, weighted by number of students in each school",
+    #                 "\nCumulative distribution plot"),
+    x = "School performance grade score",
+    y = "Percent of schools or school districts",
+    color = NULL
+    #caption = "Source: NC Dept of Instruction; plot: Daniel Moul"
+  )
+
+p2 <- data_for_plot |>
+  ggplot() +
+  stat_ecdf(aes(spg_score, color = dataset)) +
+  geom_hline(yintercept = 0.5, lty = 2, linewidth = 0.25) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.025))) +
+  scale_y_continuous(label = label_percent(),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  expand_limits(x = c(0, 100)) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    # title = "NC public school\nperformance grade scores",
+    # subtitle = glue("District scores are means, weighted by number of students in each school",
+    #                 "\nCumulative distribution plot"),
+    x = "School performance grade score",
+    y = "Percent of schools or school districts",
+    color = NULL
+    #caption = "Source: NC Dept of Instruction; plot: Daniel Moul"
+  )
+
+p1 + p2 +
+  plot_annotation(title = "NC public school performance grade scores",
+                  subtitle = glue("District scores are means, weighted by number of students in each school"),
+                  caption = "Source: NC Dept of Instruction; plot: Daniel Moul",
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+```
+
+<br>
+
+### School accountability subgroups and school performance scores {#sec-school-accountability-subgroups}
+
+Also noted in the amended regulations published in the Federal Register on November 29, 2016^[Federal Register / Vol. 81, No. 229 / Tuesday, November 29, 2016 / Rules and Regulations, page 86109. <https://thefederalregister.org/81-FR/86076> ]:
+
+<blockquote>
+...Consistent with section 1111(c)(2) of the ESEA, the regulations require that a State include certain subgroups of students, separately, when establishing long-term goals and measurements of interim progress under § 200.13, measuring the performance on each indicator under § 200.14, annually meaningfully differentiating schools under § 200.18, and identifying schools under § 200.19. These subgroups of students include economically disadvantaged students, students from each major racial and ethnic group, children with disabilities, as defined in section 8101(4) of the ESEA, and English learners, as defined in section 8101(20) of the ESEA. However, the statute does not prohibit a State from using additional subgroups in its statewide accountability system, which may include combined subgroups. We also believe it is appropriate for States to retain flexibility to include various additional subgroups, based on their contexts, so long as each required individual subgroup is also considered. Accordingly, we are not revising the regulations....
+</blockquote>
+
+I show data for most of these subgroups:
+
+```{r}
+src_spg_subgroup_descriptions <- src_spg |>
+  count(subgroup, name = "n_schools") |>
+  arrange(subgroup) |> 
+  inner_join(src_code_descriptions,
+             join_by(subgroup == code),
+             multiple = "all") |>
+  distinct(subgroup, n_schools, description) |>
+  filter(if_else(subgroup == "ALL" & description %in% c("All Subjects", "All Grades"),
+                 FALSE,
+                 TRUE)) 
+
+src_spg_subgroup_descriptions |>
+  mutate(in_subset = if_else(subgroup %in% subgroups_subset,
+                             "Y",
+                             "")) |>
+  select(subgroup, description, n_schools, in_subset) |>
+  gt() |>
+  tab_header(md(glue("**Subset of school accountability subgroups",
+                     "<br>used in this analysis**"))) |>
+  cols_align(columns = in_subset, align = "center")
+
+```
+
+<br>
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-composite-perf-by-subgroup-boxplot
+#| fig-cap: "School performance score by subgroup (boxplot)"
+#| fig-height: 6
+#| fig-width: 8
+#| column: screen-inset-right
+
+data_for_plot <- src_spg |>
+  filter(subgroup %in% subgroups_subset)
+
+n_points_included <- nrow(data_for_plot)
+
+data_for_plot |>
+  ggplot() +
+  geom_boxplot(aes(x = spg_score, y = subgroup, color = subgroup, fill = subgroup),
+               alpha = 0.5, na.rm = TRUE) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.025))) + 
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = glue("School Performance Grade\nby subgroup"),
+    subtitle = glue("North Carolina"),
+    x = "Score distribution (all schools)",
+    y = NULL,
+    color = "Subgroup",
+    fill = "Subgroup"#,
+    #caption = "Source: NC Dept of Instruction; plot: Daniel Moul"
+  )
+
+```
+
+<br>
+
+```{r fig.height=8, fig.width=8}
+#| label: fig-composite-perf-by-subgroup-and-region-boxplot
+#| fig-cap: "School performance score by subgroup and region (boxplot)"
+#| fig-height: 8
+#| fig-width: 8
+#| column: screen-inset-right
+
+data_for_plot <- src_spg |>
+  filter(subgroup %in% subgroups_subset) |>
+  mutate(subgroup = factor(subgroup, levels = subgroups_subset))
+
+n_points_included <- nrow(data_for_plot)
+
+data_for_plot |>
+  ggplot() +
+  geom_boxplot(aes(x = spg_score, y = region, color = region, fill = region), #group = agency_code
+            alpha = 0.5, na.rm = TRUE) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.025))) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_manual(values = region_colors$color) +
+  #coord_cartesian(ylim = c(0, NA)) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  facet_grid(subgroup ~ .) +
+  labs(
+    title = glue("School Performance Grade\nby subgroup and region"),
+    subtitle = glue("North Carolina regions"),
+     x = "Score distribution (all schools)",
+    y = NULL,
+    color = "Region"#,
+    #caption = "Source: NC Dept of Instruction; plot: Daniel Moul"
+  )
+
+```
+
+<br>
+
+@fig-composite-perf-by-subgroup-boxplot and @fig-composite-perf-by-subgroup-and-region-boxplot show large differences in the distribution of school performance scores by subgroup and region. Are there other variables associated with larger variance in scores? We will answer that in the next chapter.
+
+<br>
+
+```{r}
+knitr::knit_exit()
+
+```

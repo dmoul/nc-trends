@@ -1,0 +1,875 @@
+# Population structure
+
+The age-sex distribution of a population, often represented in a *population pyramid*, is the result of historical and contemporary social, economic, and geographical factors. At the county level we can infer from population pyramids something of people's differing priorities, needs, and patterns of behavior. For example, consider counties with relatively more retirees and near-retires (as in @fig-county-race-age-pyramid-retirees and @fig-county-race-age-pyramid-retirees-2) compared to others with relatively more young people (as in @fig-county-race-age-pyramid-more-youth). In North Carolina there is a lot of variation in age-sex population structure across racial groups and counties. Differences invite use to ask "Why is this the case?" and then make inferences as we try to answer.
+
+:::{.callout-note collapse="true"}
+## Note on 2020 census differential privacy
+
+The `tidycensus` package offers the following helpful warning when returning results from 2020, which is relevant to this endeavor:
+
+>2020 decennial Census data use differential privacy, a technique that introduces errors into data to preserve respondent confidentiality. Small counts should be interpreted with caution. See <https://www.census.gov/library/fact-sheets/2021/protecting-the-confidentiality-of-the-2020-census-redistricting-data.html> for additional guidance.
+:::
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R") # use for all explorationXX.qmd files
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+# library(geofacet)
+# library(ggridges)
+# library(ggrepel)
+
+#library(elevatr)
+# library(terra)
+# library(stars)
+# library(rcartocolor)
+# library(fs)
+
+#library(english) #for ordinal() to spell out words
+# library(geomtextpath)
+
+library(ggtext)
+library(latex2exp)
+
+```
+
+```{r}
+county_region_df <- tar_read(nc_county_region_mapping)
+
+# don't display plots if total pop for race is less than the following
+  # to avoid misrepresentations
+min_race_pop <- 500
+
+my_caption_pyramids <- "Data source: US Census Bureau population estimates & tidycensus R package; plot: Daniel Moul"
+
+```
+
+```{r}
+#| label: prepare-codebook
+#| include: false
+
+# import from IMPUMS NHGIS
+fname <- "./data/ipums/nhgis0018_csv/nhgis0018_ts_geog2010_county_codebook.txt"
+
+df_codebook <- tibble(
+  V1 = read_lines(fname,
+                  skip = 52)
+) |>
+  mutate(data_source = if_else(str_detect(V1, "^[A-Z]"), 
+                               V1, 
+                               NA_character_),
+         V1 = if_else(!str_detect(V1, "^[A-Z]"), 
+                      str_squish(V1), 
+                      NA_character_)
+  ) |>
+  fill(data_source, .direction = "down") |>
+  filter(str_detect(V1, "[A-Z]")) |>
+  separate(V1, into = c("variable", "description"), 
+           sep = ": ", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  mutate(description = if_else(str_detect(description, "^Persons"),
+                               paste0("estimate: ", description),
+                               description
+  )
+  ) |>
+  separate(description, into = c("type1", "type2", "description"), 
+           sep = ":", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  separate(description, into = c("race", "sex", "agegroup"), 
+           sep = "~", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  mutate(var_type = if_else(is.na(type2),
+                            type1,
+                            type2),
+         estimate_type = case_when(
+           str_detect(type1, "estimate")   ~ "estimate",
+           str_detect(type1, "Lower")      ~ "lower bound",
+           str_detect(type1, "Upper")      ~ "upper bound",
+           TRUE                            ~ NA_character_
+         )
+  ) |>
+  select(-c(type1, type2))
+
+```
+
+```{r}
+#| label: prepare-data-1
+#| include: false
+
+fname <- "./data/ipums/nhgis0018_csv/nhgis0018_ts_geog2010_county.csv"
+d_tmp <- read_csv(fname,
+                  show_col_types = FALSE) |>
+  filter(STATEA == "37") |>
+  pivot_longer(cols = !starts_with(c("GISJOIN", "STATE", "STATEA", "COUNTY", "COUNTYA", "GEOGYEAR", "DATAYEAR")),
+               names_to = "estimate",
+               values_to = "value"
+               ) |>
+  mutate(core = str_sub(estimate, 1, 5)) |>
+  group_by(core) |>
+  mutate(lower = value[2],
+         upper = value[3]) |>
+  ungroup() |>
+  filter(estimate == core) |>
+  select(-c(STATE, STATEA, core)) |>
+  clean_names() |>
+  mutate(county = str_remove(county, " County")) |>
+  inner_join(df_codebook,
+             by = c("estimate" = "variable")
+  )
+
+
+```
+
+```{r}
+#| label: prepare-data-2
+#| include: false
+
+age_categories <- tribble(
+  ~agegroup_start,    ~agegroup_new,
+  0, "0 to 4 years",
+  5, "5 to 9 years",
+  10, "10 to 14 years",
+  15, "15 to 19 years",
+  20, "20 to 24 years",
+  25, "25 to 29 years",
+  30, "30 to 34 years",
+  35, "35 to 39 years",
+  40, "40 to 44 years",
+  45, "45 to 49 years",
+  50, "50 to 54 years",
+  55, "55 to 59 years",
+  60, "60 to 64 years",
+  65, "65 to 69 years",
+  70, "70 to 74 years",
+  75, "75 to 79 years",
+  80, "80 to 84 years",
+  85, "85 years and older"
+  )
+
+d_tmp2 <- d_tmp |>
+  mutate(agegroup_start_orig = as.numeric(str_extract(agegroup, "\\d+")),
+         agegroup_start_orig = if_else(str_detect(agegroup, "Under"),
+                                  0,
+                                  agegroup_start_orig)
+         ) |>
+  inner_join(age_categories,
+             join_by(closest(agegroup_start_orig >= agegroup_start))
+             )
+
+df_sex_by_race_tmp <- d_tmp2 |>
+  summarize(.by = c(gisjoin, geogyear, datayear, county, countya, race, sex, data_source, agegroup_start, agegroup_new),
+           value = sum(value),
+           lower = sum(lower), # TODO: fix this (it's more complicated than this)
+           upper = sum(upper)  # TODO: fix this (it's more complicated than this)
+           ) |>
+  inner_join(county_region_df,
+             by = "county")
+
+```
+
+```{r}
+#| label: prepare-data-3
+#| include: false
+
+# 2021 total estimates
+
+v21 <- load_variables(2021, "acs5", cache = TRUE) |>
+  select(-geography) |>
+  filter(str_detect(concept, "^SEX BY AGE")) |>
+  mutate(label = str_remove_all(label, ":")) |>
+  separate(label,
+           into = c("var_type", "total", "sex", "agegroup", "other1", "other2", "other3"),
+           sep = "!!",
+           fill = "right") |>
+  mutate(across(.cols =  where(is.character), str_squish))
+
+x2 <- get_acs(geography = "county", 
+              state = "NC",
+              survey = "acs5",
+              table = "B01001",
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  mutate(var_suffix = str_extract(variable,"\\d+$")) |>
+  inner_join(v21,
+             join_by(variable == name)) |>
+  mutate(
+    agegroup_start = parse_integer(str_extract(agegroup, "\\d+")),
+    agegroup_start = ifelse(is.na(agegroup_start), 100, agegroup_start),
+    agegroup_start = if_else(str_detect(agegroup, "^Under"), 0, agegroup_start),
+    county = str_extract(NAME, "^.+(?= County)")
+  ) |>
+  select(-starts_with("other"), -NAME) 
+
+df_sex_by_age_tmp_2021 <- x2 |>
+  inner_join(age_categories,
+             by = "agegroup_start")
+
+df_sex_by_age_2021_totals <- x2 |>
+  filter(is.na(agegroup))
+
+df_sex_by_age_2021 <- x2 |>
+  filter(!is.na(agegroup)) |>
+  mutate(agegroup = fct_reorder(agegroup, agegroup_start))
+
+```
+
+```{r}
+#| label: prepare-data-3b
+#| include: false
+
+# now add 2021 latest estimates by age and race
+nc_pop_all_2021 <- get_estimates(geography = "county", 
+                             product = "characteristics", 
+                             breakdown = c("SEX", "AGEGROUP"),  
+                             breakdown_labels = TRUE, 
+                             state = "NC") |>
+  clean_names() |>
+  mutate(race = "all_races",
+         county = str_extract(name, "^.+(?= County)"),
+         agegroup = str_remove(agegroup, "^Age "),
+         agegroup_start = parse_integer(str_extract(agegroup, "\\d+")),
+         agegroup_start = ifelse(is.na(agegroup_start), 100, agegroup_start),
+         agegroup = as.character(agegroup), # will make this a factor again later
+         datayear = 2021
+         ) |>
+  select(-c(name, geoid)) |>
+  filter(agegroup != "Median age")
+
+df_sex_both_all_ages_2021_totals <- nc_pop_all_2021 |>
+  filter(sex == "Both sexes",
+         agegroup == "All ages")
+
+df_sex_by_age_2021_totals <- nc_pop_all_2021 |>
+  filter(sex != "Both sexes",
+         agegroup != "All ages")
+
+```
+
+```{r}
+#| label: prepare-data-3c
+#| include: false
+
+nc_race_all_2021 <- get_estimates(geography = "county", 
+                             product = "characteristics", 
+                             breakdown = c("SEX", "AGEGROUP", "RACE"),  
+                             breakdown_labels = TRUE, 
+                             state = "NC") |>
+  clean_names() |>
+  rename(variable = race) |>
+  filter(!str_detect(variable, "combination$"),
+         sex != "Both sexes",
+         agegroup != "All ages",
+         variable != "All races") |>
+  mutate(county = str_extract(name, "^.+(?= County)"),
+         agegroup = str_remove(agegroup, "^Age "),
+         agegroup_start = parse_integer(str_extract(agegroup, "\\d+")),
+         agegroup_start = ifelse(is.na(agegroup_start), 100, agegroup_start),
+         agegroup = as.character(agegroup), # will make this a factor again later
+         datayear = 2021
+         ) |>
+  select(-c(name, geoid)) |>
+  inner_join(county_region_df,
+             by = "county")
+
+df_sex_by_race_tmp_2021 <- nc_race_all_2021 |>
+  inner_join(age_categories,
+             by = "agegroup_start")
+
+# validate_that(are_equal(df_sex_by_race_tmp_2021 |>
+#                        filter(agegroup != agegroup_new) |>
+#                        nrow(),
+#                      0)
+# )
+
+df_sex_by_race <-
+  bind_rows(
+    df_sex_by_race_tmp |>
+      rename(agegroup = agegroup_new),
+    df_sex_by_race_tmp_2021 |>
+      rename(race = variable,
+             ) |>
+      select(-agegroup_new) # same as agegroup for 2021
+  ) |>
+  mutate(race = case_when(
+    str_detect(race, "(?i)white")          ~ "white",
+    str_detect(race, "(?i)black")          ~ "black",
+    str_detect(race, "(?i)american")       ~ "nativeam",
+    str_detect(race, "(?i)asian")          ~ "asian",
+    str_detect(race, "(?i)hawaiian")       ~ "asian", #"pac_islander",
+    # Missing "other" in 2021 data, so can't combine with two+ if we will compare
+    str_detect(race, "(?i)other")          ~ "other", 
+    str_detect(race, "(?i)two")            ~ "two+",
+    TRUE                                   ~ race
+  ),
+  across(where(is.character), str_squish)) |>
+  group_by(datayear, county, countya, race, sex, agegroup_start, agegroup, region, n_counties) |>
+  ungroup() |>
+  group_by(datayear, county, countya, race, sex, agegroup_start, agegroup, region, n_counties) |>
+  summarize(
+         lower = moe_sum(lower, estimate = value),
+         upper = moe_sum(upper, estimate = value),
+         value = sum(value)
+  ) |>
+  ungroup()
+
+```
+
+```{r}
+#| label: prepare-data-3d
+#| include: false
+
+df_sex_by_race_all <- bind_rows(
+  df_sex_by_race,
+  df_sex_by_age_2021_totals |>
+    # get rid of extra agegroup categories, e.g, "16 years and over"
+    filter(agegroup %in% sort(unique(df_sex_by_race$agegroup))) |>
+    inner_join(county_region_df,
+             by = "county")
+) |>
+  select(-countya)
+
+```
+
+```{r}
+#| label: define-race-county-age-facet-function
+
+plot_age_race_facet <- function(tbl, 
+                                year = NA, 
+                                county_id_range = c(1, 100), 
+                                county_subset = NA, 
+                                title = NA) {
+  # NOTE: will plot the intersection of counties specified in county_id_range and county_subset if both are specified
+  #
+  # NOTE: Assumes df_sex_by_race is available in the parent environment
+  #       Assume `min_race_pop` is defined in the parent environment (so it can be referenced in text)
+  #         don't display plots if total pop for race is less than the min_race_pop
+  #         to avoid misrepresentations
+  
+  ###### Validate input ######
+  
+  valid_years <- sort(unique(df_sex_by_race$datayear))
+  year_var = if_else(year %in% valid_years, 
+                     year, 
+                     max(valid_years))
+  
+  # # test
+  # # county_subset <- "Orange"
+  # # county_subset <- "Something invalid"
+  # valid_counties <- sort(unique(df_sex_by_race$county))
+  # valid_regions <- sort(unique(df_sex_by_race$region))
+  # # validate_that(if_else(all(is.na(county_subset)), TRUE, all(county_subset %in% valid_counties)))
+  # if(all(county_subset %in% append(valid_counties, "all_counties"))) {
+  #   county_subset <- county_subset
+  #   } else{
+  #     county_subset <- valid_counties
+  #   }
+  
+  if(!all(county_id_range %in% 1:100)) {
+    county_id_range <- c(1, 100)
+    }
+  
+  valid_counties <- sort(unique(df_sex_by_race$county))
+  valid_regions <- sort(unique(df_sex_by_race$region))
+  if(all(is.na(county_subset))) {
+    county_subset <- valid_counties
+  } else {
+    if(!any(county_subset %in% c(valid_counties, valid_regions, "all_counties"))) {
+      county_subset <- valid_counties
+    }
+  }
+    
+  if(is.na(title)) {
+    my_title <- glue("Population structure within each racial category")
+  } else {
+    my_title <- title
+  }
+  
+  ###### Prepare data ###### 
+  
+  data_for_plot <- tbl |>
+    mutate(agegroup = fct_reorder(agegroup, agegroup_start),
+           agegroup_start = fct_reorder(as.character(agegroup_start), agegroup_start),
+           value = ifelse(sex == "Male", -value, value)
+    ) |> 
+    group_by(datayear, county, race) |>
+    mutate(value_county_race_total = round(sum(abs(value))),
+           pct = value / value_county_race_total 
+    ) |>
+    ungroup() |>
+    group_by(datayear, county) |>
+    mutate(value_county_total = round(sum(abs(value[race != "all_races"])))
+    ) |>
+    ungroup() |>
+    arrange(county, datayear, race, sex, agegroup_start) |>
+    group_by(county) |>
+    mutate(county_id = cur_group_id()) |>
+    ungroup() |>
+    filter(if(all(!is.na(county_id))) county_id %in% 
+                                      county_id_range[1]:county_id_range[2] else TRUE, # TODO: fix case where range is a:a
+           if(all(!is.na(county))) county %in% county_subset else TRUE,
+           datayear == year_var)
+  
+  label_for_plot <- data_for_plot |>
+    group_by(county, race) |>
+    mutate(my_label = paste0("\\frac{", comma(value_county_race_total), "}{", comma(value_county_total), "} = ",
+                        percent(value_county_race_total / value_county_total, accuracy = 0.1))) |> 
+    ungroup() |>
+    mutate(x_label = min(pct)) |>
+    select(county, datayear, race, contains("_label")) |>
+    distinct(county, datayear, race, .keep_all = TRUE) |>
+    arrange(county, datayear) |>
+    filter(county %in% sort(unique(tbl$county)))
+  
+  data_for_ref_line <- data_for_plot |>
+    filter(agegroup_start %in% c(20, 65)) |>
+    select(datayear, county, agegroup_start, agegroup) |>
+    distinct(datayear, county, agegroup_start, agegroup)
+  
+  data_for_plot2 <- data_for_plot |>
+    mutate(pct = if_else(value_county_race_total < min_race_pop, NA_real_, pct)) 
+  
+  not_plotting_string <- if_else(any(is.na(data_for_plot2$pct)),
+                                 glue("; not plotting if pop < {comma(min_race_pop)}"),
+                                 "")
+  
+  ###### Let's plot ###### 
+  
+ data_for_plot2 |>
+    ggplot() +
+    geom_hline(data = data_for_ref_line,
+               aes(yintercept = agegroup_start), color = "black", linewidth = 0.1, lty = 2, alpha = 0.5) +
+    geom_bar(aes(x = pct, y = agegroup_start, fill = sex), stat = "identity", width = 1, alpha = 0.5, na.rm = TRUE) + 
+    geom_text(data = label_for_plot,
+              aes(x = x_label, y = 15, label = TeX(my_label, italic = TRUE, output = "character")),
+              parse = TRUE, hjust = 0, size = 1.5) +
+    scale_x_continuous(labels = function(x) percent(abs(x))) + 
+    scale_fill_manual(values = c("darkred", "navy")) + 
+    facet_grid(county ~ race, switch = "y") + 
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          axis.title.y = element_text(hjust = 1),
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          plot.title = element_text(size = rel(2.0), face = "bold"),
+          legend.position = "top") +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    labs(
+      title = my_title,
+      subtitle = glue("Plots show shape of each racial group's population",
+                      "; bar size not comparable across racial groups or counties",
+                      "\nEach row is a 5-year period; dashed lines are at approx 22 and 67", 
+                      not_plotting_string),
+      x = NULL,
+      y = NULL,
+      fill = "", 
+      caption = my_caption_pyramids
+    )
+}
+
+```
+
+<br>
+
+## NC population structure
+
+The population distributions of racial groups for the whole of North Carolina vary quite considerably. 
+
+* Since blacks and whites make up about 93% of the state population, the "all_races" distribution looks a lot like the ones for these groups. The shape indicates populations that are modestly declining. 
+
+* The Asian distribution bulges in the late twenties through early forties, consistent with immigrant communities that are recent or don't have large families.
+
+* The Native American distribution shows on-going modest growth. 
+
+* The "two or more races" distribution is most striking: a large, bottom-heavy pyramid indicates a very youthful, growing population.
+
+<br>
+
+```{r fig.height=4, fig.width=10}
+#| label: fig-state-race-age-pyramid
+#| fig-cap: "NC population structure by race for entire state"
+#| fig-height: 4
+#| fig-width: 10
+#| column: screen-inset-right
+
+plot_age_race_facet(df_sex_by_race_all |>
+                      #filter(race == "all_races") |>
+                      group_by(datayear, race, sex, agegroup_start, agegroup) |>
+                      summarize(value = sum(value)) |>
+                      ungroup() |>
+                      mutate(county = "all_counties"),
+                county_subset = "all_counties",
+                title = "NC population structure by race"
+)
+
+```
+
+<br>
+
+How to interpret these plots 
+
+* Each bar is a five-year age group with the bottom one being ages "0 to 4". The top segment is ages "85 and above". Male and female bars go to the left and right respectively, enabling a rough visual estimate of whether one sex has more people than the other in each age group (as is visible in @fig-county-race-age-pyramid-gender-asian and @fig-county-race-age-pyramid-gender-black). Traditionally the Census Bureau counts two genders; they started collecting more nuanced answers in 2021^[https://www.census.gov/library/stories/2021/11/census-bureau-survey-explores-sexual-orientation-and-gender-identity.html ]. Horizontal dashed lines roughly indicate the milestones of adulthood and retirement.
+
+* Each sub-plot represents the population distribution of one racial group (or "all_races"). Bars measure each age group's *proportion* of that racial group's population rather than *number of people*. Since blacks and whites make up such a large proportion of NC county populations, plotting counts would result in shapes so skinny that they would be uninterpretable. Thus the *shape of the distributions* are comparable but not the *magnitude of the populations*--–one cannot infer relative proportion across sub-plots by comparing the width of the bars in an age category.
+
+* Large margins of error and differential privacy for small subgroups has the most impact here, so focus on the general shape, not the exact growth rate for any population segment. I don't plot distributions for racial groups with less than `r min_race_pop` people in a county.
+
+* The various shapes point to likely trends, ignoring future net inflows or outflows or changes in family size. Imagine the shapes moving upwards through the years: shapes with a narrower base than middle (white and black) are likely to decline in absolute numbers as people die. Shapes with a wider base (two+, nativeam) are likely to keep growing.
+
+```{r}
+counties_with_military <- c("Craven", "Cumberland", "Hoke", "Onslow", "Wayne")
+
+counties_with_uni <- c("Cumberland", "Jackson", "New Hanover", "Orange", "Pitt", "Durham", "Wake", "Mecklenburg", "Watauga")
+
+counties_with_retiree_communities <- c("Brunswick", "Carteret", "Cherokee", "Clay", "Jones", "Macon", "Martin",
+                                       "Mitchell", "Pamlico", "Perquimans", "Polk", "Stokes", "Transylvania",
+                                       "Washington", "Warren", "Yadkin")
+
+counties_with_growing_youth <- c("Onslow", "Union")
+
+counties_missing_youth <- c("Hyde", "Harnett", "Watauga")
+
+counties_missing_college_age <- c("Hoke", "Hyde", "Camden", "Mecklenburg")
+
+counties_missing_twentysomethings <- c("Union", "Chatham")
+
+counties_with_children_echo <- c("Union", #Asian
+                                 "Cabarus" # Asian
+                                 )
+
+counties_with_large_gender_disparities_asian <- c("Brunswick", "Buncombe", "Cumberland", "Davidson", "Franklin",
+                                                  "Harnett", "Henderson", "Hoke", "Johnston", "Nash", "New Hanover",
+                                                  "Onslow", "Orange", "Pasquotank", "Pitt", "Surry")
+
+counties_with_large_gender_disparities_black <- c("Alexander", "Avery", "Burke", "Cumberland", "Duplin", "Greene",
+                                                  "Hyde", "McDowell", "Mecklenburg", "Pamlico", "Transylvania",
+                                                  "Tyrrell")
+
+# error check
+# anti_join(county_region_df, 
+#           tibble(county = counties_with_retiree_communities), 
+#           by = "county")
+# 
+# length(counties_with_retiree_communities)
+
+```
+
+<br>
+
+### Regions
+
+Aggregating population age groups to the regional level, distributions are generally similar with the exception of the coastal region where the influence of military bases is evident (see @fig-county-race-age-pyramid-military). At this summary level, racial group differences are more pronounced.
+
+<br>
+
+```{r}
+df_sex_by_race_region <- df_sex_by_race_all |>
+  group_by(datayear, region, race, sex, agegroup_start, agegroup, n_counties) |>
+  summarize(value = sum(value)) |>
+  ungroup() |>
+  mutate(county = region)
+
+```
+
+```{r fig.height=9, fig.width=10}
+#| label: fig-county-race-age-pyramid-region
+#| fig-cap: "NC population structure by race summarized by region"
+#| fig-height: 9
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(df_sex_by_race_region,
+                county_subset = unique(df_sex_by_race_region$county), #actually regions
+                title = "NC population structure by race\nregional summary"
+)
+
+```
+
+<br>
+
+### Military bases
+
+In these counties one or more military bases supply "extra" people mostly in their twenties. A characteristic bar juts out to the left indicating an unusually large portion of young men in their early twenties. Onslow, home of Camp Lejeune and Marine Air Station New River, is especially unbalanced overall while the pattern varies by racial group. For example, among Asians in Onslow there are disproportionally many males in their twenties and females in their forties and fifties, and similar patterns exist in Cumberland and Wayne counties.
+
+Counties with the largest military bases:
+
+* Craven (Marine Air Station Cherry Point)
+* Cumberland (Fort Bragg and Pope Air Force Base)
+* Hoke (Fort Bragg)
+* Onslow (Camp Lejeune, Marine Air Station New River)
+* Wayne (Seymour Johnson Air Base)
+
+<br>
+
+```{r fig.height=9, fig.width=10}
+#| label: fig-county-race-age-pyramid-military
+#| fig-cap: "NC population structure by race in counties with military bases"
+#| fig-height: 9
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(df_sex_by_race_all,
+                county_subset = counties_with_military,
+                title = "NC population structure by race\nin counties with military bases"
+)
+
+```
+
+<br>
+
+### Colleges and universities
+
+Similar to counties with military bases, these counties have a bars that jut out representing young people at college--both male and female. In universities with a lot of graduate students, the extra width starts or continues in the years beyond 25.
+
+Counties with large college and university student populations are listed below. The population distributions show horizontal bars around age 20 if the students are a relatively large portion of the people in their lower twenties:
+
+* Cumberland (Fayetteville State University and Methodist College)
+* Durham (Duke University and Medical Center, North Carolina Central University)
+* Jackson (Western Carolina University)
+* Mecklenbug (UNC Charlotte, Queens University of Charlotte, Johnson & Wales University Charlotte Campus)
+* New Hanover (UNC Wilmington)
+* Orange (University of North Carolina main campus and UNC Hospitals)
+* Pitt (East Carolina University)
+* Wake (North Carolina State University and Meredith College)
+* Watauga (Appalachian State University)
+
+<br>
+
+```{r fig.height=12, fig.width=10}
+#| label: fig-county-race-age-pyramid-uni
+#| fig-cap: "NC population structure by race in counties with colleges and universities"
+#| fig-height: 12
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_uni,
+                title = "NC population structure by race\nin counties with colleges and universities"
+)
+
+```
+
+<br>
+
+In Mecklenburg and Wake counties, the university populations are small relative to the whole counties, so their plots lack the characteristic bump in the late teens and early twenties.
+
+In @fig-county-race-age-pyramid-uni we see gender imbalance among certain racial groups in some counties, for example:
+
+* White males in Cumberland county (likely due to military bases)
+* Asian and "two+" female students in Watauga county (likely reflecting campus composition at AppState)
+
+<br>
+
+### Retirement-heavy counties
+
+The population distributions of these counties include a characteristic bulb in the ten years or so before and after retirement. This is most common among whites and in counties with some of the smallest, rural populations. The Asian, Native American and two or more groups typically make up a very small proportion of these counties' population.
+
+<br>
+
+```{r fig.height=12, fig.width=10}
+#| label: fig-county-race-age-pyramid-retirees
+#| fig-cap: "NC population structure by race in counties with large retiree communities - part 1"
+#| fig-height: 12
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_retiree_communities[1:9],
+                title = "NC population structure by race\nin counties with a large portion of retirees or near-retirees part 1"
+)
+```
+
+<br>
+
+```{r fig.height=9, fig.width=10}
+#| label: fig-county-race-age-pyramid-retirees-2
+#| fig-cap: "NC population structure by race in counties with large retiree communities - part 2"
+#| fig-height: 9
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_retiree_communities[10:17],
+                title = "NC population structure by race\nin counties with a large portion of retirees or near-retirees part 2"
+)
+
+```
+
+<br>
+
+### With more youth than is typical in NC
+
+The "echo" of families with children are evident when there is a narrow waist followed by a wide foot.
+
+<br>
+
+```{r fig.height=6, fig.width=10}
+#| label: fig-county-race-age-pyramid-more-youth
+#| fig-cap: "NC population structure by race in counties with more youth than is typical in NC counties"
+#| fig-height: 6
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_growing_youth,
+                title = "NC population structure by race\nin counties with more youth than is typical"
+)
+
+```
+
+<br>
+
+###  Missing youth or college age 
+
+A narrow "waist" at age 20 or a very narrow foot indicates a relative dearth of young people.
+
+<br>
+
+```{r fig.height=9, fig.width=10}
+#| label: fig-county-race-age-pyramid-missing-youth
+#| fig-cap: "NC population structure by race in counties missing youth or college age"
+#| fig-height: 9
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = union(counties_missing_youth, counties_missing_college_age),
+                title = "NC population structure by race\nin counties missing youth or college age"
+)
+
+```
+
+<br>
+
+### Counties with large gender imbalance 
+
+Gender imbalances have many causes, including (1) immigration patterns (do men and women immigrate in similar numbers in similar age groups?); (2) institutional draws (schools, military, correctional facilities); (3) employment draws; and (4) old-age survivorship rates. In North Carolina the most visible gender imbalances can be found in Asian and black groups in a subset of counties.
+
+<br>
+
+```{r fig.height=18, fig.width=10}
+#| label: fig-county-race-age-pyramid-gender-asian
+#| fig-cap: "NC population structure by race in counties with large Asian gender imbalance"
+#| fig-height: 18
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_large_gender_disparities_asian,
+                title = "NC population structure by race\nin counties with large Asian gender imbalance"
+)
+
+```
+
+<br>
+
+
+```{r fig.height=18, fig.width=10}
+#| label: fig-county-race-age-pyramid-gender-black
+#| fig-cap: "NC population structure by race in counties with large black gender imbalance"
+#| fig-height: 18
+#| fig-width: 10
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_subset = counties_with_large_gender_disparities_black,
+                title = "NC population structure by race\nin counties with large black gender imbalance"
+)
+
+```
+
+<br>
+
+## For reference: all NC counties
+
+The following ten plots show the population distribution by racial group for all 100 NC counties in alphabetical order.
+
+***TODO: move this to the appendix(?)***
+
+<br>
+
+```{r fig.height=12, fig.width=8}
+#| label: fig-county-race-age-pyramid-all
+#| fig-cap: "NC county population structure parts 1 to 10"
+#| fig-height: 12
+#| fig-width: 8
+#| column: screen-inset-right
+#| warning: false
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(1,10),
+                title = "NC population structure by race (part 1/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(11,20),
+                title = "NC population structure by race (part 2/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(21,30),
+                title = "NC population structure by race (part 3/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(31,40),
+                title = "NC population structure by race (part 4/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(41,50),
+                title = "NC population structure by race (part 5/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(51,60),
+                title = "NC population structure by race (part 6/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(61,70),
+                title = "NC population structure by race (part 7/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(71,80),
+                title = "NC population structure by race (part 8/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(81,90),
+                title = "NC population structure by race (part 9/10)"
+)
+
+plot_age_race_facet(tbl = df_sex_by_race_all,
+                county_id_range = c(91,100),
+                title = "NC population structure by race (part 10/10)"
+)
+
+```
+
+<br>

@@ -1,0 +1,1701 @@
+# NC income and education
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R")
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+library(geofacet)
+library(ggtext)
+library(geomtextpath)
+library(broom)
+
+theme_set(theme_light())
+
+my_caption_acs <- "Source: 5-year ACS 2019 via tidycensus; plot: Daniel Moul"
+my_caption_ncdpi <- "Source: NC Dept of Public Instruction; plot: Daniel Moul"
+my_caption_both <- "Source: 5-year ACS 2019 via tidycensus and NC Dept of Public Instruction; plot: Daniel Moul"
+
+```
+
+```{r}
+
+nc_city_boundaries <- tar_read(nc_city_boundaries)
+
+county_region_df <- tar_read(nc_county_region_mapping)
+
+nc_county_boundaries <- tar_read(nc_county_boundaries) |>
+  inner_join(
+    county_region_df,
+    by = "county"
+  )
+
+urban_crescent_boundary <- nc_county_boundaries |>
+  filter(county %in% urban_crescent) |>
+  summarize(boundary = st_union(geometry))
+
+coastal_boundary <-  nc_county_boundaries |>
+  filter(county %in% coastal) |>
+  summarize(boundary = st_union(geometry))
+
+mountain_boundary <- nc_county_boundaries |>
+  filter(county %in% mountain) |>
+  summarize(boundary = st_union(geometry))
+
+manufacturing_boundary <- nc_county_boundaries |>
+  filter(county %in% manufacturing) |>
+  summarize(boundary = st_union(geometry))
+
+# agriculture boundary is everything else
+
+nc_state_boundary <- st_union(nc_county_boundaries)
+nc_state_boundary_sf <- st_as_sf(nc_state_boundary)
+
+```
+
+```{r}
+cutoff_year <- 2019 # stop here since during pandemic some reporting was options
+focus_year <- 2019
+
+```
+
+```{r}
+#| include: false
+
+# downloaded from https://www.dpi.nc.gov/data-reports/school-report-cards/school-report-card-resources-researchers on 2023-01-17
+# for context see https://www.dpi.nc.gov/data-reports/school-report-cards/frequently-asked-questions
+
+# from Data-Dictionary-202206.xlsx the following subset:
+src_tables <- readxl::read_xlsx("./data/school-report-card/Data-Dictionary-202206-dmoul.xlsx",
+                  sheet = "TABLE INDEX") |>
+  filter(dmoul_select == 1)
+
+# see also the "CODE DEFINITIONS" tab in the above
+
+# see also 
+src_code_descriptions <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_code_desc.xlsx")
+
+
+```
+
+```{r}
+#| include: false
+
+# Q: Where can I map agency codes to school names or county? (county is more relevant)
+# Q: Local Education Agencies (LEAs) - are these districts or schools? Districts
+  
+src_location_tmp <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_location.xlsx",
+                                  col_types = "text") |>
+  filter(year == as.character(focus_year),
+         category_code %in% c("H", "T", "A")) # High school, Middle + High, Elementary + Middle + High
+         
+src_location <- src_location_tmp |>
+  filter(agency_level == "SCH",
+         designation_type == "P", # public schools
+         #lea_code != "CH", # exclude charter schools and those not affiliate with school district
+         school_type == "Regular School"
+         ) |>
+  select(year, agency_code, name, county, city, zip, lea_code, category_code, grade_span, school_type) |>
+  mutate(year = as.numeric(year))
+
+src_lea <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_location.xlsx",
+                                  col_types = "text") |>
+  mutate(year = as.numeric(year)) |>
+  filter(year == focus_year,
+         agency_level == "LEA") |>
+  select(year, agency_code, name, county, zip, url)
+
+# will need to correct for some differences in names of the school districts before joining dfs
+src_lea_mapping_tigris <- read_csv("./data/school-report-card/school-district-name-mapping.csv",
+                                   skip = 2) |>
+  mutate(name = str_squish(name),
+         school_district_name = str_squish(school_district_name))
+
+```
+
+```{r}
+#| label: prepare-median-income
+#| include: false
+
+# 2019 total estimates
+
+v19 <- load_variables(2019, "acs5", cache = TRUE) |>
+  select(-geography) 
+
+my_vars <- c(
+  "B07011_001", #Estimate!!Median income in the past 12 months --!!Total:
+  #"B06011_001", #Estimate!!Median income in the past 12 months --!!Total:
+  #"B19326_001", #Estimate!!Median income in the past 12 months (in 2019 inflation-adjusted dollars) --!!Total (dollars):
+  # I confirmed that all three of the above median income variables return the same amount, so I need only one
+  "B19301_001", #Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars))
+  "B20004_001", #Estimate!!Total:, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER""
+  "B20004_002", #Estimate!!Total:!!Less than high school graduate, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_003", #Estimate!!Total:!!High school graduate (includes equivalency), MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_004", #Estimate!!Total:!!Some college or associate's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_005", #Estimate!!Total:!!Bachelor's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+  "B20004_006" #Estimate!!Total:!!Graduate or professional degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+)
+
+v19_subset <- v19 |>
+  filter(name %in% my_vars) |> # str_detect(concept, "^SEX BY AGE")) |>
+  mutate(label = str_remove_all(label, ":")) |>
+  separate(label,
+           into = c("var_type", "variable", "description"),
+           sep = "!!",
+           fill = "right") |>
+  mutate(across(.cols =  where(is.character), str_squish),
+         description = case_when(
+           name == "B20004_001"    ~ "Median earnings - all education levels (age 25 and over with earnings)",
+           name == "B07011_001"    ~ "Median income in the past 12 months (age 15 and over)",
+           name == "B19301_001"    ~ "Per capita income in the past 12 months (whole population)",
+           TRUE                    ~ description
+         ),
+         var_new = case_when(
+           name == "B07011_001"                                     ~ "med_income",
+           name == "B19301_001"                                     ~ "pci",
+           name == "B20004_001"                                     ~ "all_years_ed",
+           str_detect(description, "Less than high school")         ~ "10_years_ed",
+           str_detect(description, "High school graduate")          ~ "12_years_ed",
+           str_detect(description, "Some college")                  ~ "14_years_ed",
+           str_detect(description, "Bachelor's degree")             ~ "16_years_ed",
+           description == "Graduate or professional degree"         ~ "19_years_ed",
+           TRUE                                                     ~ "ERROR"
+         )
+         ) |>
+  select(-variable)
+
+d_ed_income <- get_acs(geography = "county", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars,
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_extract(NAME, "^.+(?= County)"),
+         years_ed = if_else(str_detect(variable, "B20004"),
+                            as.numeric(str_extract(var_new, "^\\d+")),
+                            NA_real_),
+         var_new = if_else(!is.na(years_ed),
+                           "ed_attainment",
+                           var_new)
+         ) |>
+  rename(county = NAME)
+
+# TODO use this when comparing school district data
+
+d_ed_income_sch_district <- get_acs(geography = "school district (unified)", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars,
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_remove(NAME, ", North Carolina"),
+         years_ed = if_else(str_detect(variable, "B20004"),
+                            as.numeric(str_extract(var_new, "^\\d+")),
+                            NA_real_),
+         var_new = if_else(!is.na(years_ed),
+                           "ed_attainment",
+                           var_new)
+         ) |>
+  rename(school_district_name = NAME)
+
+
+# TODO make use of this, for example to compare racial mix in schools
+
+my_vars_race <- v19 |>
+  filter(concept == "RACE") |>
+  filter(name %in% paste0("B02001_00", 1:8)) |>
+  pull(name)
+
+d_race_by_school_district <- get_acs(geography = "school district (unified)", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              variables = my_vars_race,
+              geometry = FALSE,
+              cache_table = TRUE
+              ) |>
+  left_join(v19,
+             by = c("variable" = "name")) |>
+  replace_na(list(moe = 0)) |> # total pop has no moe 
+  rename(var_label = label) |>
+  mutate(var_label = str_remove(var_label, ":*$"),
+         var_label = str_extract(var_label, "(\\w[ ]?)+$"),
+         var_label = case_when(
+           str_detect(var_label, "White")      ~ "white",
+           str_detect(var_label, "Black")      ~ "black",
+           str_detect(var_label, "Asian")      ~ "asian_pac",
+           str_detect(var_label, "Pacific")      ~ "asian_pac",
+           str_detect(var_label, "Indian")      ~ "native_am",
+           str_detect(var_label, "other")      ~ "two+",
+           str_detect(var_label, "Two")      ~ "two_plus",
+           .default = str_to_lower(var_label)
+         ),
+         NAME = str_remove(NAME, ", North Carolina$")) |>
+  rename(school_district_name = NAME) |>
+  summarize(estimate = sum(estimate),
+            moe = moe_sum(moe, estimate = estimate),
+            .by = c(GEOID, school_district_name, concept, var_label)
+            ) |>
+  mutate(pct_pop = estimate / estimate[var_label == "total"],
+         moe_pct_pop = moe_ratio(num = estimate, denom = max(estimate), moe_num = moe, moe_denom = 1),
+         .by = c(GEOID, school_district_name, concept)
+         ) |>
+  rename(pop = estimate,
+         moe_pop = moe) |>
+  left_join(src_lea_mapping_tigris,
+            by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name)) |>
+  left_join(src_lea,
+             by = "name") |>
+  filter(!is.na(county)) |>
+  mutate(school_district_name = name) |>
+  select(-name) |>
+  left_join(county_region_df,
+            by = "county")
+```
+
+```{r}
+#| include: false
+
+# school district boundaries
+# https://nces.ed.gov/programs/edge/Geographic/DistrictBoundaries
+
+income_by_ed_nc_state <- get_acs(geography = "state",
+              state = "NC",
+              year = 2019,
+              variables = my_vars, #"B01003_001",
+              geometry = FALSE,
+              cache_table = TRUE) |>
+  inner_join(v19_subset,
+             by = c("variable" = "name"))
+
+income_by_ed_nc_school_districts_tmp <- get_acs(geography = "school district (unified)",
+              state = "NC",
+              year = 2019,
+              variables = my_vars, #"B01003_001",
+              geometry = TRUE,
+              cache_table = TRUE) |>
+  mutate(school_district_name = str_remove(NAME, ", North Carolina$")) |>
+  inner_join(v19_subset,
+             by = c("variable" = "name")) |>
+  left_join(src_lea_mapping_tigris,
+              by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name)) |>
+  left_join(src_lea,
+             by = "name") |>
+  filter(!is.na(county)) |>
+  left_join(county_region_df,
+            by = "county") |>
+  st_transform(crs = my_proj)
+
+# There are six cases of income estimate by school district not being available for (1) Less than high school graduate
+# or (2) Graduate or professional degree, presumably due to an insufficient number of people being in the group
+
+
+income_by_ed_nc_school_districts <- income_by_ed_nc_school_districts_tmp |>
+  st_drop_geometry()
+
+nc_school_districts_boundaries <- income_by_ed_nc_school_districts_tmp |>
+  select(GEOID, school_district_name, agency_code, county, region) |>
+  distinct(school_district_name, .keep_all = TRUE)
+
+
+```
+
+```{r}
+#| label: prepare-median-income-by-race
+#| include: false
+
+# commenting this out, since it's been run above
+# v19 <- load_variables(2019, "acs5", cache = TRUE) |>
+#   select(-geography) 
+
+my_vars <- tribble(
+  ~name, ~label, ~concept,
+  "B19301_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS)",
+  "B19301A_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (WHITE ALONE)",
+  "B19301B_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (BLACK OR AFRICAN AMERICAN ALONE)",
+  "B19301C_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (AMERICAN INDIAN AND ALASKA NATIVE ALONE)",
+  "B19301D_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (ASIAN ALONE)",
+  "B19301E_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (NATIVE HAWAIIAN AND OTHER PACIFIC ISLANDER ALONE)",
+  "B19301F_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (SOME OTHER RACE ALONE)",
+  "B19301G_001",
+  "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (TWO OR MORE RACES)"#,
+  #"B19301H_001",
+  # "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  # "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (WHITE ALONE, NOT HISPANIC OR LATINO)",
+  # "B19301I_001",
+  # "Estimate!!Per capita income in the past 12 months (in 2019 inflation-adjusted dollars)",
+  # "PER CAPITA INCOME IN THE PAST 12 MONTHS (IN 2019 INFLATION-ADJUSTED DOLLARS) (HISPANIC OR LATINO)"
+  )
+
+v19_subset <- v19 |>
+  filter(name %in% my_vars$name) |> # str_detect(concept, "^SEX BY AGE")) |>
+  mutate(label = str_remove_all(label, ":")) |>
+  separate(label,
+           into = c("var_type", "description"),
+           sep = "!!",
+           fill = "right") |>
+  mutate(across(.cols =  where(is.character), str_squish),
+         concept = str_to_lower(concept),
+         description = case_when(
+           name == "B19301_001"                                ~ "pci - all",
+           str_detect(concept, "white alone")                  ~ "pci - white",
+           str_detect(concept, "african american alone")       ~ "pci - black",
+           str_detect(concept, "asian alone")                  ~ "pci - asian_pac",
+           str_detect(concept, "pacific islander alone")       ~ "pci - asian_pac",
+           str_detect(concept, "native alone")                 ~ "pci - native_am",
+           str_detect(concept, "other")                        ~ "pci - two_plus",
+           str_detect(concept, "two")                          ~ "pci - two_plus",
+           TRUE                                                ~ description
+         ),
+         var_label = str_remove(description, "pci - ")
+         )
+
+d_race_income_county <- get_acs(geography = "county", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars$name,
+              geometry = FALSE,
+              summary_var = c("B19301_001"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_extract(NAME, "^.+(?= County)")) |>
+  rename(county = NAME)
+# TODO: weighed mean of `pci - asia_pac` based on number of people (once that's merged in)... or drop hawaiian and pacific islander alone
+
+# d_race_income |>
+#   filter(variable == "B19301E_001") |>
+#   mutate(isna = is.na(estimate)) |>
+#   pull(isna) %>%
+#   sum()
+# 65% NA !!
+
+# TODO use this when comparing school district data
+
+d_race_income_sch_district <- get_acs(geography = "school district (unified)", 
+              state = "NC",
+              survey = "acs5",
+              year = 2019,
+              #table = "B01001",
+              variables = my_vars$name,
+              geometry = FALSE,
+              summary_var = c("B19301_001"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v19_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_remove(NAME, ", North Carolina$")) |>
+  rename(school_district_name = NAME) |>
+  rename(pci = estimate,
+         moe_pci = moe) |>
+  left_join(src_lea_mapping_tigris,
+            by = "school_district_name") |>
+  mutate(name = coalesce(name, school_district_name)) |>
+  left_join(src_lea,
+             by = "name") |>
+  filter(!is.na(county)) |>
+  mutate(school_district_name = name) |>
+  select(-name) |>
+  # add columns for population by race
+  left_join(
+    d_race_by_school_district |>
+      mutate(var_label = if_else(var_label == "total", "all", var_label)) |> # to match d_race_income_sch_district,
+      select(GEOID, school_district_name, var_label, contains("pop")),
+    by = c("GEOID", "school_district_name", "var_label")
+  ) |>
+  # now can do weighted mean to consolidate pci for asian_pac and two_plus
+  summarize(pci = weighted.mean(pci, w = pct_pop, na.rm = TRUE),
+            #moe_pci = moe_ratio(num = pci, denom = max(pci), moe_num = moe_pci, moe_denom = 1), # TODO: fix this (not correct)
+            .by = c("GEOID", "school_district_name", "summary_est", "summary_moe", "var_label")
+            ) |>
+  mutate(pci_pct_of_all = pci / summary_est)  |>
+  left_join(src_lea |>
+              select(school_district_name = name, agency_code, county),
+             by = "school_district_name") |>
+  left_join(county_region_df,
+            by = "county")
+
+```
+
+<br>
+
+## Introduction
+
+Income is associated with school performance, however it doesn't tell the whole story. There are significant disparities in educational outcomes for racial/ethnic subgroups and other "accountability groups" as noted in the chapter *NC Education* @sec-school-accountability-subgroups. Below I look at the associations of income, subgroup, and region with school performance: *visually* and *numerically*.
+
+### Income and earnings
+
+The five-year ACS ending in 2019 includes a number of variables related to income and earnings. I use the following:
+
+
+1. B07011_001 (***Median income*** *in the past 12 months; universe: Population 15 years and over in the United States with income*) 
+1. B19301_001 (***Per capita income*** *in the past 12 months; universe: Total population*). For per capita income by race I use "B19301A_001" through "B19301G_001". 
+1. B20004_001 and related variables (***Median earnings*** *in the past 12 months; universe: Population 25 years and over with earnings*) by level of educational attainment (and all education levels)
+
+All are estimates in 2019 dollars with geographical boundary of "county" or "school district (unified) as indicated"^[ACS 2019 table shells <https://www.census.gov/programs-surveys/acs/technical-documentation/table-shells.2019.html#list-tab-8YLQAW43H3HSKKQHPT> ]
+
+:::{.callout-note collapse="true"}
+### Note on estimates
+
+Data are estimates from the US Census five-year American Community Survey (ACS) results ending in 2019. At the time I am doing this analysis (Nov/Dec 2022), this was the latest reliable data available: detailed 2020 decennial census income data had not been released, and 2020 ACS results were less reliable than usual due to the COVID-19 pandemic. ACS estimates have much larger margins of error (MOE) than the decennial census. In small sub-populations MOEs can exceed estimated values. To simplify the presentation in this chapter I have not represented this uncertainty in most cases; instead I use the estimates as given. An exception is @fig-income-by-years-ed-2.
+:::
+
+<br>
+
+Relevant ACS definitions of some measures of income^[ACS 2019 subject definitions <https://www2.census.gov/programs-surveys/acs/tech_docs/subject_definitions/2019_ACSSubjectDefinitions.pdf> Pages 86-88. ]:
+
+<blockquote>**Income of Individuals** – Income for individuals is obtained by summing the eight types of income for each person 15 years old and over. The characteristics of individuals are based on the time of interview even though the amounts are for the past 12 months.
+
+**Median Income** – The median divides the income distribution into two equal parts: one-half of the cases falling below the median income and one-half above the median. For households and families, the median income is based on the distribution of the total number of households and families including those with no income. The median income for individuals is based on individuals 15 years old and over with income. Median income for households, families, and individuals is computed on the basis of a standard distribution.
+
+**Per Capita Income** – Per capita income is the mean income computed for every man, woman, and child in a particular group including those living in group quarters. It is derived by dividing the aggregate income of a particular group by the total population in that group. (The aggregate used to calculate per capita income is rounded.
+
+**Median Earnings** – The median divides the earnings distribution into two equal parts: one- half of the cases falling below the median and one-half above the median. Median earnings is restricted to individuals 16 years old and over with earnings and is computed on the basis of a standard distribution. Median earnings figures are calculated using linear interpolation.
+
+</blockquote>
+
+And as noted at censusreporter.org^[<https://censusreporter.org/topics/income/> ]:
+
+<blockquote>
+...in Census Bureau terminology, *earnings* are a subset of income. Specifically, earnings are wages or salary from a job, or income from being self-employed. Other kinds of income, not included in earnings, include social security payments, interest and dividends, income from property rental, pensions, public assistance, and child support.
+</blockquote
+
+<br>
+
+## Income and earnings (county aggregation)
+
+There are distributions in the estimates of the income measures across the counties of NC.
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-ecdf-income
+#| fig-cap: "Cumulative distribution of median and per capita income"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+county_levels <- d_ed_income  |>
+  filter(var_new == "pci") |>
+  arrange(-estimate) |>
+  pull(county) |>
+  unique()
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(d_ed_income |>
+              filter(var_new %in% c("med_income", "pci", "all_years_ed")),
+            by = c("county"),
+            multiple = "all") |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  mutate(county = factor(county, levels = county_levels))
+
+p1 <- data_for_plot |>
+  ggplot() +
+  geom_density(aes(estimate, color = var_new, fill = var_new),
+               alpha = 0.15) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) + 
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_color_viridis_d(end = 0.8) +
+  scale_fill_viridis_d(end = 0.8) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(#title = "",
+       subtitle = "Density",
+       x = NULL,
+       y = NULL,
+       color = NULL,
+       fill = NULL#,
+       #caption = my_caption
+       )
+
+p2 <- data_for_plot |>
+  ggplot() +
+  stat_ecdf(aes(estimate, color = var_new),
+            geom = "line",
+            linewidth = 1.5,
+            pad = FALSE) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) + 
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.8) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(#title = "",
+       subtitle = "Cumulative distribution",
+       x = NULL,
+       y = "Percent of counties",
+       color = NULL#,
+       #caption = my_caption
+       )
+
+p1 + p2 + 
+  plot_annotation(title = 'Estimates: median income, per capita income,\nand median earnings - all years education',
+                  subtitle = glue("Five-year ACS 2019: Median income (B07011_001), PCI (B19301_001)",
+                                  ", and median earnings - all education levels (B20004_001)",
+                                  "\nCounty-level aggregation. See introduction for definitions of each variable"),
+                  caption = my_caption,
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-median-fam_inc-and-pci
+#| fig-cap: "Median income, per capita income, and median earnings - all years education (approximate geographical locations)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+#| eval: false
+
+county_levels <- d_ed_income  |>
+  filter(var_new == "pci") |>
+  arrange(-estimate) |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  pull(county) |>
+  unique()
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(d_ed_income |>
+              filter(var_new %in% c("med_income", "pci", "all_years_ed")),
+            by = c("county"),
+            multiple = "all") |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  mutate(county = factor(county, levels = county_levels))
+
+data_for_plot |>
+  #filter(var_new %in% c("med_income")) |> # TODO: remove this test
+  ggplot() +
+  geom_col(aes(x = var_new, y = estimate, fill = var_new),
+           alpha = 0.5, na.rm = TRUE) + #linewidth = 2, 
+  geom_errorbar(aes(x = var_new, ymin = estimate - moe, ymax = estimate + moe),
+                na.rm = TRUE, width = 0.2) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$"),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  facet_geo( ~ county,
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.title = element_text(size = rel(4.0), face = "bold"),
+        legend.position = "top") +
+  labs(title = "Estimates: median income, per capita income,\nand median earnings - all years education", 
+       subtitle = glue("Five-year ACS 2019 with error bars showing +/- MOE at 90% CI: Median income (B07011_001), PCI (B19301_001)",
+                                  ", and median earnings - all education levels (B20004_001)",
+                                  "\nCounty-level aggregation. See definitions for universe used for each variable"),
+       x = NULL,
+       y = "Income",
+       fill = "Variables",
+       caption = my_caption)
+
+```
+
+<br>
+
+All three measures point to higher income in the urban areas, with per capita income showing the largest differences.
+
+```{r fig.height=12, fig.width=12}
+#| label: fig-nc-map-county-med-earnings-facet-by-years-ed-faceted
+#| fig-cap: "NC median income, pci, and median earnings by educational attainment (2019)"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+if(!file.exists("./figures/nc-map-county-med-income-pci-med-earnings-2019.png")) {
+  
+  data_for_plot <- nc_county_boundaries |>
+    inner_join(d_ed_income |>
+                 filter(variable %in% c("B07011_001", "B19301_001", "B20004_001")),
+               by = c("geoid" = "GEOID", "county" = "county")
+    ) |>
+    mutate(
+      med_estimate = median(estimate, na.rm = TRUE),
+      facet_label = glue("{variable}: {description} (median = ${comma(med_estimate)})"),
+      .by = "variable")
+  
+  p1 <- data_for_plot |>
+    ggplot() +
+    geom_sf(aes(fill = estimate), color = "black", linewidth = 0.1, alpha = 0.8) +
+    geom_sf(data = nc_state_boundary,
+            color = "grey40", linewidth = 0.6, fill = NA) +
+    geom_sf(data = nc_county_boundaries,
+            color = "grey10", linewidth = 0.1, fill = NA) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", linewidth = 0.2, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "peru", linewidth = 0.2, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", linewidth = 0.2, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", linewidth = 0.2, fill = NA, alpha = 1) +
+    scale_fill_gradient(high = "navyblue", low = "mediumaquamarine", #"yellowgreen", # "lightskyblue",
+                         #trans = "log10",
+                         labels = label_number(scale_cut = cut_short_scale(), prefix = "$")
+    ) +
+    facet_wrap( ~ facet_label, ncol = 1) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(2.0), face = "bold"),
+          legend.position = "right" # c(0.2, 0.3)
+    ) +
+    labs(title = glue("North Carolina median income, pci,\nand median earnings - all education levels"),
+         subtitle = str_wrap(glue("Five-year ACS 2019", 
+                                  "; colored boundaries are region designations"),
+                             width = 80),
+         fill = "Last 12\nmonths",
+         caption = my_caption)
+  
+  ggsave("./figures/nc-map-county-med-income-pci-med-earnings-2019.png", p1, width = 12, height = 12, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-county-med-income-pci-med-earnings-2019.png")
+
+```
+
+<br>
+
+And last in this section, a look at median earnings by educational attainment (county aggregation). Again we see (1) the strong association between higher levels of educational attainment and median earnings, and (2) the differences generally are largest in urban areas.
+
+```{r fig.height=12, fig.width=12}
+#| label: fig-nc-map-county-med-earnings-facet-by-years-ed
+#| fig-cap: "NC median earnings by educational attainment (2019)"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+if(!file.exists("./figures/nc-map-county-med-earnings-by-years-ed-2019.png")) {
+  
+  data_for_plot <- nc_county_boundaries |>
+    inner_join(d_ed_income |>
+                 filter(years_ed %in% c(12, 16, 19)),
+               by = c("geoid" = "GEOID", "county" = "county")
+    ) |>
+    mutate(
+      med_estimate = median(estimate, na.rm = TRUE),
+      facet_label = glue("{variable}: {description} (median = ${comma(med_estimate)})"),
+      .by = "years_ed") |>
+     mutate(facet_label = fct_reorder(facet_label, years_ed))
+  
+  p1 <- data_for_plot |>
+    ggplot() +
+    geom_sf(aes(fill = estimate), color = "black", linewidth = 0.1, alpha = 0.8) +
+    geom_sf(data = nc_state_boundary,
+            color = "grey40", linewidth = 0.6, fill = NA) +
+    geom_sf(data = nc_county_boundaries,
+            color = "grey10", linewidth = 0.1, fill = NA) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", linewidth = 0.2, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "peru", linewidth = 0.2, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", linewidth = 0.2, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "white", linewidth = 0.6, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", linewidth = 0.2, fill = NA, alpha = 1) +
+    scale_fill_gradient(high = "navyblue", low = "mediumaquamarine", #"yellowgreen", # "lightskyblue",
+                         #midpoint = log10(med_value),
+                         #trans = "log10",
+                         labels = label_number(scale_cut = cut_short_scale(), prefix = "$")
+    ) +
+    facet_wrap( ~ facet_label, ncol = 1) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(2.0), face = "bold"),
+          legend.position = "right" # c(0.2, 0.3)
+    ) +
+    labs(title = glue("North Carolina median earnings by educational attainment"),
+         subtitle = str_wrap(glue("Five-year ACS 2019", 
+                                  "; colored boundaries are region designations"),
+                             width = 80),
+         fill = "Last 12\nmonths",
+         caption = my_caption)
+  
+  ggsave("./figures/nc-map-county-med-earnings-by-years-ed-2019.png", p1, width = 12, height = 12, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-county-med-earnings-by-years-ed-2019.png")
+
+```
+
+<br>
+
+## Years of education (school district aggregation)
+
+To simplify plotting and linear regression, I converted categorical levels of educational attainment to numerical years of education in `var_new` as shown below. The `XX_years_ed` is my generalization of the average number of years required to achieve this level of education.
+
+```{r}
+income_by_ed_nc_school_districts |>
+  distinct(description, var_new) |>
+  arrange(var_new) |>
+  gt()
+
+```
+
+<br>
+
+```{r fig.height=8, fig.width=12, eval=FALSE}
+#| label: fig-income-by-years-ed-1
+#| fig-cap: "Income by years of education - boxplots includuing margins of error"
+#| fig-height: 8
+#| fig-width: 12
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot1 <- income_by_ed_nc_school_districts |>
+  mutate(estimate_plus_moe = estimate + moe,
+         estimate_minus_moe = estimate - moe) |>
+  rename(estimate_only = estimate) |>
+  pivot_longer(cols = starts_with("estimate"), 
+               names_to = "estimate_type",
+               values_to = "value") |>
+  mutate(var_name = glue("{var_new}_{estimate_type}"),
+         var_label = glue("{var_name}: {description}")) 
+
+data_for_plot1 |>
+  ggplot() +
+  #geom_boxplot(aes(x = value, y = str_extract(var_name, "^\\d{2}"), color = var_new, fill = var_new),
+  geom_boxplot(aes(x = value, y = var_label, color = var_new, fill = var_new),
+               #fill = "steelblue", 
+               alpha = 0.5,
+               na.rm = TRUE) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "Estimated median income\nby education level in NC",
+    subtitle = "5-year ACS through 2019; by school district (not weighted by population)",
+    x = "Estimated yearly income",
+    y = NULL,
+    caption = my_caption_acs
+  )
+```
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-income-by-years-ed-2
+#| fig-cap: "Income by years of education - cumulative distribution with margins of error"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+my_loess_model <- function(x, y) {
+  loess(y ~ x, data = tibble(x = x, y = y)) |>
+    augment(se_fit = TRUE)
+}
+
+my_probs <- seq(from = 0.01, to = 1.0, by = 0.01)
+
+data_for_plot1 <- income_by_ed_nc_school_districts |>
+  mutate(estimate_plus_moe = estimate + moe,
+         estimate_minus_moe = estimate - moe) |>
+  rename(estimate_only = estimate) |>
+  pivot_longer(cols = starts_with("estimate"), 
+               names_to = "estimate_type",
+               values_to = "value") |>
+  mutate(var_name = glue("{var_new}_{estimate_type}"),
+         var_label = glue("{var_name}: {description}")) 
+
+data_for_plot2 <- data_for_plot1 |>
+  filter(str_detect(var_new, "^\\d{2}")) |>
+  select(GEOID, school_district_name, description,  county, region, 
+         variable, var_new, estimate_type, var_name, value, moe) |>
+  nest(data = c(GEOID, school_district_name, county, region, estimate_type, var_name, value, moe),
+       .by = c(description, variable, var_new, estimate_type, var_name)) %>%
+  mutate(quan = list(quantile(data[[1]][["value"]], 
+                              probs = my_probs,
+                              na.rm = TRUE, names = FALSE)),
+         my_prob_list = list(my_probs),
+         .by = c(description, variable, var_new, estimate_type, var_name)) |>
+  select(var_new, estimate_type, var_name, quan, my_prob_list) |>
+  mutate(my_loess = map2(quan, my_prob_list, my_loess_model)) |>
+  unnest(my_loess) |>
+  select(-starts_with("."), -quan, -my_prob_list, -var_name) |>
+  pivot_wider(names_from = "estimate_type", values_from = "x") 
+
+p1 <- data_for_plot2 |>
+  ggplot() +
+  geom_density(aes(estimate_only, color = var_new),
+               alpha = 0.15) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) +
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = c(0.8, 0.3), #"none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = "none") +
+  labs(
+   # title = "More years of education is strongly associated with more yearly income",
+    #subtitle = "2019; each ribbon shows median income with +/- margin of error providing 90% confidence intervals",
+    subtitle = "Density (median income estimate without MOE)",
+    x = "Median yearly income",
+    y = "Percent of school districts",
+    color = NULL,
+    fill = "Years of\nEducation"#,
+    #caption = my_caption_both
+  )
+
+p2 <- data_for_plot2 |>
+  ggplot() +
+  geom_ribbon(aes(xmin = estimate_minus_moe, xmax = estimate_plus_moe, y = y,
+                  color = NULL, fill = var_new, group = var_new),
+              alpha = 0.3, na.rm = TRUE) +
+  geom_line(aes(x = estimate_only, y = y, color = var_new, group = var_new)) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) +
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = c(0.8, 0.3), #"none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = "none") +
+  labs(
+    #title = "More years of education is strongly associated with more yearly income",
+    #subtitle = "2019; each ribbon shows median income with +/- margin of error providing 90% confidence intervals",
+    subtitle = "Cumulative distribution; median income estimate +/- MOE with 90% CI",
+    x = "Median yearly income",
+    y = "Percent of school districts",
+    color = NULL,
+    fill = "Years of\nEducation"#,
+    #caption = my_caption_both
+  )
+
+p1 + p2 +
+  plot_annotation("More years of education is strongly associated\nwith more yearly income",
+                  #subtitle = glue("District scores are means, weighted by number of students in each school"),
+                  caption = "Source: NC Dept of Instruction; plot: Daniel Moul",
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+<br>
+
+```{r fig.height=8, fig.width=8}
+#| label: fig-income-by-years-ed-facet
+#| fig-cap: "Income by years of education by region"
+#| fig-height: 10
+#| fig-width: 8
+#| column: screen-inset-right
+
+income_by_ed_nc_school_districts |>
+  ggplot() +
+  geom_boxplot(aes(x = estimate, y = var_new, color = region, fill = region),
+               na.rm = TRUE, alpha = 0.5) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  scale_color_manual(values = region_colors$color) +
+  scale_fill_manual(values = region_colors$color) +
+  theme(legend.position = "right",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  facet_grid( var_new ~ ., scales = "free_y") +
+  labs(
+    title = "Estimated median income\nby education level in NC",
+    subtitle = "5-year ACS through 2019; by school district (not weighted by population)",
+    x = "Estimated yearly income",
+    y = NULL,
+    color = "Region",
+    fill = "Region",
+    caption = my_caption_acs
+  )
+
+```
+
+<br>
+
+## School performance score and median income (school district aggregation) {#sec-spg-median-income}
+
+```{r}
+subgroups_subset <- c("AM7", "AS7", "BL7", "HI7", "MU7", "WH7", "EDS", "SWD", "AIG", "ALL")
+
+```
+
+```{r}
+#| include: false
+
+# using this for n_students mostly (since using school performance grade rather than spc, which is a component of spg)
+
+src_perf_composite <- readr::read_table ("./data/school-report-card/SRC-Datasets-2022/rcd_acc_pc.txt") |>
+  filter(year == focus_year,
+         subject == "EOC", # all 9-12 tests
+         standard == "CCR", # college and career ready (alternatively could use GLP: grade level proficiency)
+         !is.na(pct),
+         subgroup %in% subgroups_subset
+         ) |>
+  inner_join(src_location |>
+             select(-year),
+             by = "agency_code") |>
+  select(subgroup, school_name = name, spc_score = pct, n_student = den, year, 
+         school_agency_code = agency_code, lea_code, category_code, grade_span)
+
+```
+
+```{r}
+#| include: false
+
+# since measure changed starting in 2018 we only have 2018 and 2019 data available, so I'll use 2019 only
+src_spg <- readxl::read_xlsx("./data/school-report-card/SRC-Datasets-2022/rcd_acc_spg2.xlsx") |>
+  filter(year == focus_year) |>
+  select(year, agency_code, subgroup, spg_score, spg_grade) |>
+  inner_join(src_location |>
+             select(-year),
+             by = "agency_code") |>
+  inner_join(county_region_df,
+             by = "county")
+
+```
+
+```{r}
+subgroups_subset <- c("AM7", "AS7", "BL7", "HI7", "MU7", "WH7", "EDS", "SWD", "AIG", "ALL")
+
+src_spg_subgroup_descriptions <- src_spg |>
+  count(subgroup, name = "n_schools") |>
+  arrange(subgroup) |> 
+  inner_join(src_code_descriptions,
+             join_by(subgroup == code),
+             multiple = "all") |>
+  distinct(subgroup, n_schools, description) |>
+  filter(if_else(subgroup == "ALL" & description %in% c("All Subjects", "All Grades"),
+                 FALSE,
+                 TRUE)) 
+
+# src_spg_subgroup_descriptions |>
+#   mutate(in_subset = if_else(subgroup %in% subgroups_subset,
+#                              "Y",
+#                              "")) |>
+#   select(subgroup, description, n_schools, in_subset) |>
+#   #relocate(in_subset, .after = subgroup) |>
+#   gt() |>
+#   tab_header(md(glue("**Subset of school accountability subgroups",
+#                      "<br>used in this analysis**"))) |>
+#   cols_align(columns = in_subset, align = "center")
+
+```
+
+```{r}
+spg_and_income <- src_spg |>
+  filter(subgroup %in% subgroups_subset) |>
+  mutate(subgroup = factor(subgroup, levels = subgroups_subset)) |>
+  rename(school_name = name) |>
+  select(-c(agency_code, year, county, region, n_counties, zip)) |>
+  left_join(income_by_ed_nc_school_districts |>
+              select(-NAME, -name) |>
+              filter(var_new %in% c("pci", "med_income", "all_years_ed")),
+            by = c("lea_code" = "agency_code"),
+            #multiple = "all"
+            relationship = "many-to-many"
+            ) |>
+  group_by(region, subgroup) |>
+  mutate(n_subgroups_in_region = n()) |>
+  ungroup() |>
+  group_by(subgroup) |>
+  mutate(n_subgroups_in_state = n()) |>
+  ungroup()
+
+# spg_and_income_with_all_years_ed <- src_spg |>
+#   filter(subgroup %in% subgroups_subset) |>
+#   mutate(subgroup = factor(subgroup, levels = subgroups_subset)) |>
+#   rename(school_name = name) |>
+#   select(-c(agency_code, year, county, region, n_counties, zip)) |>
+#   left_join(income_by_ed_nc_school_districts |>
+#               select(-NAME, -name) |>
+#               filter(var_new %in% c("all_years_ed")),
+#             by = c("lea_code" = "agency_code"),
+#             multiple = "all") |>
+#   group_by(region, subgroup) |>
+#   mutate(n_subgroups_in_region = n()) |>
+#   ungroup() |>
+#   group_by(subgroup) |>
+#   mutate(n_subgroups_in_state = n()) |>
+#   ungroup()
+
+spg_race_and_pci <- src_spg |>
+  filter(subgroup %in% c("ALL", "WH7", "BL7", "AM7", "AS7", "MU7")) |>
+  mutate(subgroup = factor(subgroup, levels = subgroups_subset),
+         subgroup_label = case_when(
+           subgroup == "ALL"     ~ "all",
+           subgroup == "WH7"     ~ "white",
+           subgroup == "BL7"     ~ "black",
+           subgroup == "AM7"     ~ "native_am",
+           subgroup == "AS7"     ~ "asian_pac",
+           subgroup == "MU7"     ~ "two_plus",
+           .default = subgroup
+         )) |>
+  rename(school_name = name) |>
+  select(-c(agency_code, year, county, region, n_counties, zip)) |>
+  left_join(d_race_income_sch_district,
+            join_by(lea_code == agency_code,
+                    subgroup_label == var_label),
+            multiple = "all") |>
+  group_by(region, subgroup) |>
+  mutate(n_subgroups_in_region = n()) |>
+  ungroup() |>
+  group_by(subgroup) |>
+  mutate(n_subgroups_in_state = n()) |>
+  ungroup()
+
+```
+
+Is there a change in score associated with a change in median income of the people living the school district catchment area? Yes. As seen in @fig-score-by-median-income, scores increase as median income increases, however this is a smaller factor than racial/ethnic group, being economically disadvantaged, or being a student with a disability. Income is confounded by membership in racial/ethnic and economically disadvantaged subgroups, which are partially a proxy for income (which is not visible in this data set). And as we can see in @fig-score-by-median-income-region, region is a partial proxy for income too.
+
+* There are three clusters: (1) Students with disability (SWD) have a unique set of challenges, and their trend line is distinct from the other subgroups; (2) black (BU7), Native American (AM7), Hispanic (HI7), multiple races (MU7), and Economically disadvantaged (EDS); and (3) Asian (AS7) and white (WH7). These categories are overlapping: a student may belong to two or more subgroups.
+
+* The composite "All" subgroup is closest to the white (WH7) grouping, since in the majority of schools the white population is a large majority.
+
+### Score by median income (school district aggregation)
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-score-by-median-income
+#| fig-cap: "School performance score by median income"
+#| fig-height: 6
+#| fig-width: 8
+#| column: screen-inset-right
+
+spg_and_income |>
+  filter(var_new == "all_years_ed") |>
+  ggplot(aes(estimate, spg_score, color = subgroup)) +
+  geom_point(alpha = 0.15) +
+  geom_textsmooth(aes(label = subgroup, group = subgroup, linewidth = n_subgroups_in_state),
+                   method = "lm", formula = y ~ x,
+                   hjust = "auto", alpha = 0.6) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = glue("School Performance Score for subgroups\nby median income"),
+    subtitle = glue("2019; linewidth shows relative number of subgroups in the schools of NC"),
+    x = "Estimated median income in school districts",
+    y = "Score",
+    color = "Subgroup",
+    fill = "Subgroup",
+    caption = my_caption_ncdpi
+  )
+
+```
+
+<br>
+
+The patterns generally hold up when faceting by region.
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-score-by-median-income-region
+#| fig-cap: "School performance score by median income by region"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+spg_and_income |>
+  filter(var_new == "all_years_ed",
+         !(subgroup == "AM7"),
+         !(subgroup == "AS7" & region == "Agriculture"),
+         !(subgroup == "MU7" & region == "Manufacturing"),
+         # !(subgroup == "BL7" & region == "Coastal"),
+         # !(subgroup == "MU7" & region == "Coastal"),
+         !(subgroup %in% c("BL7", "MU7") & region == "Mountains")
+         ) |>
+  ggplot(aes(estimate, spg_score, color = subgroup)) +
+  geom_point(alpha = 0.15) +
+  geom_textsmooth(aes(label = subgroup, group = subgroup, linewidth = n_subgroups_in_region),
+                   method = "lm", formula = y ~ x,
+                   hjust = "auto", alpha = 0.6) +
+  facet_grid(. ~ region) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = glue("School Performance Score for subgroups\nby median income by region"),
+    subtitle = glue("2019",
+                    "; AM7, AS7, BL7, and MU7 removed for some regions due to insufficient number of data points",
+                    "\nLinewidth indicates relative number of subgroups in the schools of each region"),
+     x = "Estimated median income in school districts",
+    y = "Score",
+    color = "Subgroup",
+    fill = "Subgroup",
+    caption = my_caption_ncdpi
+  )
+
+```
+
+<br>
+
+### Score by per capita income (school district aggregation)
+
+The picture is different when looking at per capita income (PCI) instead of median income. In contrast to median income, (1) PCI varies by subgroup; and (2) there is less overlap in income ranges. Note that the PCI universe is not bounded by age, so subgroups that on average have larger families will have lower PCI. These differences in PCI by subgroup may be confounded by the mix of education levels in each group (data that would confirm this is not at hand).
+
+```{r fig.height=6, fig.width=8}
+#| label: fig-score-by-pci
+#| fig-cap: "School performance score for subgroups by per capita income"
+#| fig-height: 6
+#| fig-width: 8
+#| column: screen-inset-right
+
+spg_race_and_pci |>
+  ggplot(aes(pci, spg_score, color = subgroup)) +
+  geom_point(alpha = 0.15) +
+  geom_textsmooth(aes(label = subgroup, group = subgroup, linewidth = n_subgroups_in_state),
+                   method = "lm", formula = y ~ x,
+                   hjust = "auto", alpha = 0.6) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  #coord_cartesian(ylim = c(20, 100), expand = TRUE) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = glue("School Performance Score for subgroups\nper capita income"),
+    subtitle = glue("2019"),
+    x = "Estimated pci in school districts",
+    y = "Score",
+    color = "Subgroup",
+    fill = "Subgroup",
+    caption = my_caption_ncdpi
+  )
+
+```
+
+<br>
+
+The patterns generally hold up when faceting by region, however the trend lines do not; likely this is due to the narrower income bands of the subgroups.
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-score-by-pci-income-region
+#| fig-cap: "School performance score for subgroups by per capita income by region"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+spg_race_and_pci |>
+  filter(!(subgroup == "AM7"),
+         !(subgroup == "AS7" & region == "Agriculture"),
+         !(subgroup == "MU7" & region == "Manufacturing"),
+         # !(subgroup == "BL7" & region == "Coastal"),
+         # !(subgroup == "MU7" & region == "Coastal"),
+         !(subgroup %in% c("BL7", "MU7") & region == "Mountains")
+         ) |>
+  ggplot(aes(pci, spg_score, color = subgroup)) +
+  geom_point(alpha = 0.15,
+             na.rm = TRUE) +
+  geom_textsmooth(aes(label = subgroup, group = subgroup, linewidth = n_subgroups_in_region),
+                  method = "lm", formula = y ~ x,
+                  hjust = "auto", alpha = 0.6,
+                  na.rm = TRUE) +
+  facet_grid(. ~ region) +
+  scale_x_continuous(label = label_number(scale_cut = cut_short_scale(),
+                                          prefix = "$")) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_fill_viridis_d(end = 0.85) +
+  #coord_cartesian(ylim = c(20, 100), expand = TRUE) +
+  theme(legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = glue("School Performance Score for subgroups by per capita income"),
+    subtitle = glue("2019",
+                    "; AM7, AS7, BL7, and MU7 removed for some regions due to insufficient number of data points",
+                    "\nLinewidth indicates relative number of subgroups in region"),
+     x = "Estimated pci in school districts",
+    y = "Score",
+    color = "Subgroup",
+    fill = "Subgroup",
+    caption = my_caption_ncdpi
+  )
+
+```
+
+<br>
+
+## Quantifying associations (school district aggregation)
+
+Linear regression estimates quantify associations among variables. Can we find any terms in addition to years of education $years\_ed\_centered$ that are strongly associated with median $income$? Yes.
+
+A basic linear regression formula is of the form $$dependent\_variable \sim independent\_var_1 + independent\_var_2$$
+
+Regression models that use $subgroup$ as a term provide an estimate (for each subgroup) of the difference it makes after considering the reference subgroup, which does not show up in the list of regression estimates. In this case the reference subgroup is "AM7" American Indian and Native Alaska (aka "native_am").
+
+How much of the variance in the dependent variable can be explained by the independent variables? I use $adjusted\ R^2$ as the metric to evaluate various linear regressions. Simpler explanations (i.e., fewer independent variables) are better than more complex ones and are less likely to overfit the data.
+
+```{r}
+#| include: false
+
+library(lme4)
+library(broom.mixed)
+
+```
+
+```{r}
+data_for_model_tmp <- src_spg |>
+  filter(subgroup %in% subgroups_subset) |>
+  rename(school_name = name,
+         school_agency_code = agency_code) |>
+  inner_join(
+    src_perf_composite |>
+      filter(subgroup %in% subgroups_subset) |>
+      select(-c(lea_code, category_code, grade_span)),
+    by = c("subgroup", "school_agency_code", "school_name", "year"),
+  ) |>
+  mutate(pct_student = n_student / max(n_student),
+         .by = school_agency_code) |>
+  left_join(
+    income_by_ed_nc_school_districts |>
+      mutate(years_ed = str_extract(var_new, "^\\d{2}")) |>
+      filter(!is.na(years_ed)) |>
+      select(agency_code, school_district_name, income = estimate, moe, description, var_new),
+    join_by(lea_code == agency_code),
+    relationship = "many-to-many"
+  ) |>
+  mutate(years_ed = as.numeric(str_extract(var_new, "^\\d{2}")))
+
+income_mean <- data_for_model_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(income_mean = mean(income, na.rm = TRUE)) |>
+  pull()
+  
+years_ed_mean <- data_for_model_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(years_ed_mean = mean(years_ed, na.rm = TRUE)) |>
+  pull()
+
+data_for_model_all_students <- data_for_model_tmp |>
+  filter(subgroup == "ALL") |>
+  mutate(income_centered = income - income_mean,
+         years_ed_centered = years_ed - years_ed_mean)
+
+data_for_model_subgroup_students <- data_for_model_tmp |>
+  filter(subgroup != "ALL") |> # Keep or drop this?
+  mutate(income_centered = income - income_mean,
+         years_ed_centered = years_ed - years_ed_mean)
+
+tidy_my_model <- function(my_formula, my_model) {
+  tidy(my_model, conf.int = TRUE, conf.level = 0.90) |>
+  mutate(formula = my_formula) |>
+  bind_cols(glance(my_model) |>
+              select(-c(statistic, p.value))) |>
+  relocate(formula, .before = term)
+}
+
+show_formula <- function(x) {
+  glue("{deparse(substitute(x))} = {x}")
+}
+
+```
+
+```{r}
+
+# now for pci instead of median income
+data_for_model_pci_tmp <- spg_race_and_pci |>
+  inner_join(
+    src_perf_composite |>
+      filter(subgroup %in% subgroups_subset) |>
+      select(-c(lea_code, category_code, grade_span)),
+    by = c("subgroup", "school_name"),
+    relationship = "many-to-many"
+  ) |>
+  mutate(pct_student = n_student / max(n_student),
+         .by = school_agency_code) |>
+  left_join(
+    income_by_ed_nc_school_districts |>
+      mutate(years_ed = str_extract(var_new, "^\\d{2}")) |>
+      filter(!is.na(years_ed)) |>
+      select(agency_code, school_district_name, income = estimate, moe, description, var_new),
+    join_by(lea_code == agency_code),
+    relationship = "many-to-many"
+  ) |>
+  mutate(years_ed = as.numeric(str_extract(var_new, "^\\d{2}")))
+
+pci_mean <- data_for_model_pci_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(pci_mean = mean(pci, na.rm = TRUE)) |>
+  pull()
+  
+pci_years_ed_mean <- data_for_model_pci_tmp |>
+  filter(subgroup == "ALL") |>
+  summarize(years_ed_mean = mean(years_ed, na.rm = TRUE)) |>
+  pull()
+
+data_for_model_pci_all_students <- data_for_model_pci_tmp |>
+  filter(subgroup == "ALL") |>
+  mutate(pci_centered = pci - pci_mean,
+         years_ed_centered = years_ed - pci_years_ed_mean)
+
+data_for_model_pci_subgroup_students <- data_for_model_pci_tmp |>
+  filter(subgroup != "ALL") |> # Keep or drop this?
+  mutate(pci_centered = pci - pci_mean,
+         years_ed_centered = years_ed - pci_years_ed_mean)
+
+```
+
+```{r}
+df_model_params <- tribble(
+  ~formula,                                            ~data_df,                             ~grouping,
+  "income ~ years_ed_centered",                        data_for_model_all_students,          "all",
+  "income ~ years_ed_centered + n_student",            data_for_model_all_students,          "all",
+  "income ~ region",                                   data_for_model_all_students,          "subgroup",
+  "income ~ years_ed_centered + subgroup",             data_for_model_subgroup_students,     "subgroup",
+  "income ~ years_ed_centered + subgroup + n_student", data_for_model_subgroup_students,     "subgroup",
+  "income ~ subgroup",                                 data_for_model_subgroup_students,     "subgroup",
+  "income ~ region",                                   data_for_model_all_students,          "subgroup",
+  "pci ~ years_ed_centered",                           data_for_model_pci_all_students,      "all",
+  "pci ~ subgroup",                                    data_for_model_pci_subgroup_students, "subgroup",
+  "pci ~ subgroup + n_student",                        data_for_model_pci_subgroup_students, "subgroup",
+  "spg_score ~ income",                                data_for_model_all_students,          "all",
+  "spg_score ~ subgroup",                              data_for_model_subgroup_students,     "subgroup",
+  "spg_score ~ subgroup + n_student",                  data_for_model_subgroup_students,     "subgroup",
+  "spg_score ~ pct_student",                           filter(data_for_model_subgroup_students, subgroup == "EDS"), "EDS",
+  "spg_score ~ pci",                                   data_for_model_pci_subgroup_students, "subgroup",
+  "spg_score ~ pci + subgroup",                        data_for_model_pci_subgroup_students, "subgroup"
+) |>
+  mutate(mod_id = glue("{str_pad(row_number(), width = 2, side = 'left', pad = ' ')}"))
+
+df_models <- df_model_params %>%
+  mutate(model = map2(formula, data_df, ~lm(formula = .x, data = .y)),
+         stats = map(model, ~ tidy(.x, conf.int = TRUE, conf.level = 0.90) |>
+                       bind_cols(glance(.x) |>
+                                   select(-c(statistic, p.value))
+                       )
+         )
+    ) 
+
+df_model_results <- df_models |>
+  select(-c(data_df, model)) |>
+  unnest(stats)
+
+```
+
+### Summary: strongest associations
+
+The strongest associations are the following:
+
+* *Median income* ($income$) with years of education ($years\_ed\_centered$). $R^2 = 82\%$
+* *Per capita income* ($pci$) with $subgroup$. $R^2 = 52\%$
+* *School performance score* ($spg\_score$) with $subgroup$. $R^2 = 52\%$
+
+The details are below.
+
+### Median income
+
+The baseline model $income \sim years\_ed\_centered$ explains 82% of the variance, and adding $subgroup$ or $n\_student$ doesn't help much. Neither $region$ or $subgroup$ are useful. The bars show 90% confidence intervals.
+
+<br>
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-income-tidy-models
+#| fig-cap: "Models predicting median income"
+#| fig-height: 8
+#| fig-width: 12
+#| column: screen-inset-right
+
+df_model_results |>
+  filter(term != "(Intercept)",
+         str_detect(formula, "^income")) |>
+  mutate(formula_label = glue("{formula} (R2 = {round(adj.r.squared, digits = 2)})"),
+         formula_label = fct_reorder(formula_label, -adj.r.squared)) |>
+  ggplot(size = 0.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high, y = term, color = grouping),
+                 height = 0.5) +
+  geom_point(aes(x = estimate, y = term, color = grouping)) +
+  scale_color_viridis_d(end = 0.85) +
+  facet_wrap(formula_label ~ . ) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    title = "Models predicting median income",
+    #subtitle = glue("'lm({mod4.0_formula})' with adjusted R2 = {round(adj_r2, digits = 2)}"),
+    x = NULL,
+    y = NULL,
+    caption = my_caption_both
+  )
+```
+
+<br>
+
+### Per capita income
+
+$pci$ has the potential to be interesting, since it varies by racial $subgroup$. Do we see it in the numbers? Yes. The baseline model $pci \sim subgroup$ explains 52% of the variance, and adding $n\_student$ doesn't help much. $years\_ed\_centered$ is not useful.
+
+<br>
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-pci-tidy-models
+#| fig-cap: "Models predicting PCI"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+df_model_results |>
+  filter(term != "(Intercept)",
+         str_detect(formula, "^pci")) |>
+  mutate(formula_label = glue("{formula} (R2 = {round(adj.r.squared, digits = 2)})"),
+         formula_label = fct_reorder(formula_label, -adj.r.squared)) |>
+  ggplot(size = 0.5) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high, y = term, color = grouping),
+                 height = 0.2) +
+  geom_point(aes(x = estimate, y = term, color = grouping)) +
+  scale_color_viridis_d(end = 0.85) +
+  facet_wrap(formula_label ~ .) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    title = "Models predicting per capita income",
+    #subtitle = glue("'lm({mod4.0_formula})' with adjusted R2 = {round(adj_r2, digits = 2)}"),
+    x = NULL,
+    y = NULL,
+    caption = my_caption_both
+  )
+```
+
+<br>
+
+### School performance score
+
+Can we find meaningful associations with school performance grade score? Yes, but like $pci$, not as strongly as median $income$.
+
+A very simple model is again the best: $spg\_score \sim subroup$ explains 52% of the variance.
+
+Here we see the same three clusters of subgroups as noted in the plots in @sec-spg-median-income [School district score and median income].
+
+What about $pci$ instead of median $income$? $R^2$ is 0.31 and adding $subgroup$ raises $R^2$ to 0.42, which is less explanatory than using $subgroup$ alone.
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-spg-score-tidy-models
+#| fig-cap: "Models predicting spg_score"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+df_model_results |>
+  filter(term != "(Intercept)",
+         str_detect(formula, "^spg_score")) |>
+  mutate(formula_label = glue("{formula} (R2 = {round(adj.r.squared, digits = 2)})"),
+         formula_label = fct_reorder(formula_label, -adj.r.squared)) |>
+  ggplot() +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high, y = term, color = grouping),
+                 height = 0.4) +
+  geom_point(aes(x = estimate, y = term, color = grouping), 
+             size = 0.5) +
+  scale_color_viridis_d(end = 0.85) +
+  facet_wrap(formula_label ~ .) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+  labs(
+    title = "Models predicting school performance grade score",
+    #subtitle = glue("'lm({mod4.0_formula})' with adjusted R2 = {round(adj_r2, digits = 2)}"),
+    x = NULL,
+    y = NULL,
+    caption = my_caption_both
+  )
+```
+
+<br>
+
+What if we look only at economically disadvantaged students (EDS)? There is a weak association: the higher the percentage of economically disadvantaged students in a school, the lower the $spg\_score$. As seen in [Models and model parameters] the model $spg\_score \sim pct\_student$ using the data_grouping EDS explains only 4% of the variance in $spg\_score$
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-eds-triptych
+#| fig-cap: "Considering only the economically disadvantaged student subgroup"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+data_for_plot <- data_for_model_subgroup_students |>
+       filter(subgroup == "EDS") 
+
+n_schools <- nrow(data_for_plot)
+
+p1 <- data_for_plot |>
+  ggplot(aes(pct_student)) +
+  geom_density() +
+  geom_rug() +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.025))) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    x = "Percent of students in school EDS",
+    y = "Density"
+  )
+
+p2 <- data_for_plot |>
+  ggplot(aes(pct_student)) +
+  stat_ecdf() +
+  geom_rug() +
+  scale_x_continuous(labels = label_percent()) +
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0.025))) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    x = "Percent of students in school EDS",
+    y = "Percent of schools"
+  )
+
+p3 <- data_for_plot |>
+  ggplot(aes(pct_student, spg_score)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = 'y ~ x') +
+  geom_rug(sides = "b") +
+  scale_x_continuous(labels = label_percent()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    x = "Percent of students in school EDS",
+    y = "SPG score"
+  )
+  
+p1 + p2 + p3 + 
+  plot_annotation(title = 'Economically disadvantaged students (EDS)',
+                  subtitle = glue("2019",
+                                  "; n = {comma(n_schools)} schools"),
+                  caption = my_caption_ncdpi,
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+<br>
+
+### Models and model parameters
+
+The table below lists regression models and their key parameters. Some notes:
+
+* The mean years of education is 14.2 based on the informal mapping I created (see [Years of education (school district aggregation)]); $years\_ed\_centered$ is the number of years +/- from this average. Thus when using $years\_ed\_centered$ in a regression model, for example $income \sim years\_ed\_centered$, the intercept indicates the income at the mean years of education.
+
+* Regression models that use $subgroup$ as a term provide an estimate (for each subgroup) of the difference it makes after considering the reference subgroup, which does not show up in the list of regression estimates. In this case the reference subgroup is "AM7" American Indian and Native Alaska (aka "native_am").
+
+* $n\_student$ is the number of students in a school taking the end of course (EOC) exams. In addition to using it in some regressions, it provides a relative size of the schools and is helpful when calculating district-wide summaries using weighted means.
+
+<br>
+
+```{r}
+#| label: fig-tbl-model-results
+#| fig-cap: "Model results"
+#| column: page-inset-right
+
+df_model_results |>
+  select(mod_id, formula, data_grouping = grouping, term, estimate, p.value, conf.low, conf.high, adj.r.squared, sigma, nobs) |>
+  group_by(formula) |>
+  gt() |>
+  tab_header(md("**Model summaries**")) |>
+  tab_footnote("Confidendence interval 90%", locations = cells_column_labels(c(conf.low, conf.high))) |>
+  tab_options(table.font.size = 10) |>
+  fmt_number(columns = c(estimate, conf.low, conf.high),
+             decimals = 1) |>
+  fmt_number(columns = adj.r.squared,
+             decimals = 2) |>
+  fmt_number(columns = sigma,
+             decimals = 0) |>
+  fmt_number(columns = p.value,
+             decimals = 5) |>
+  as_raw_html()
+
+```
+
+```{r}
+knitr::knit_exit()
+
+```

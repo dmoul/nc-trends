@@ -1,0 +1,892 @@
+# NC household and per capita income
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R")
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+library(geofacet)
+library(ggtext)
+
+```
+
+```{r}
+
+nc_city_boundaries <- tar_read(nc_city_boundaries)
+
+county_region_df <- tar_read(nc_county_region_mapping)
+
+nc_county_boundaries <- tar_read(nc_county_boundaries) |>
+  inner_join(
+    county_region_df,
+    by = "county"
+  )
+
+urban_crescent_boundary <- nc_county_boundaries |>
+  filter(county %in% urban_crescent) |>
+  summarize(boundary = st_union(geometry))
+
+coastal_boundary <-  nc_county_boundaries |>
+  filter(county %in% coastal) |>
+  summarize(boundary = st_union(geometry))
+
+mountain_boundary <- nc_county_boundaries |>
+  filter(county %in% mountain) |>
+  summarize(boundary = st_union(geometry))
+
+manufacturing_boundary <- nc_county_boundaries |>
+  filter(county %in% manufacturing) |>
+  summarize(boundary = st_union(geometry))
+
+# agriculture boundary is everything else
+
+nc_state_boundary <- st_union(nc_county_boundaries)
+nc_state_boundary_sf <- st_as_sf(nc_state_boundary)
+
+```
+
+```{r}
+
+df_income <- tar_read(pop_race)  |>
+  filter(str_detect(new_var, "^i_")) |>
+  arrange(year, county, new_var) |>
+  group_by(county, year) |>
+  mutate(implied_people_per_household = value[[1]] / value[[2]]) |>
+  ungroup() |>
+  left_join(county_region_df,
+            by = "county")
+
+df_income_cagr <- df_income |>
+  filter(!is.na(value)) |>
+  arrange(county, year) |>
+  group_by(county, new_var) |>
+  mutate(cagr = (value / lag(value))^(1 / (year - lag(year))) - 1) |>
+  ungroup()
+
+```
+
+<br>
+
+There are a number of useful measures of income. In this chapter I use $median\ household\ income$ and $per\ capita\ income$ at the county level, because data is available for both variables going back to 1980, making trend plots possible.
+
+Growth rates are over ten years unless noted to be compound annual growth rates.
+
+:::{.callout-note collapse="true"}
+## Note on median income
+
+Median income data on this page for 2012 and 2019 are estimates from the US Census five-year American Community Survey (ACS) results ending in those years. At the time I am doing this analysis (Nov/Dec 2022), this was the latest reliable data available: 2020 decennial census income data had not been released, and 2020 ACS results were less reliable than usual due to the COVID-19 pandemic. ACS estimates have much larger margins of error (MOE) than the decennial census. In small sub-populations MOEs can exceed estimated values. To simplify the presentation I have not represented this uncertainty; instead I use the estimates as given.
+:::
+
+<br>
+
+ACS definition of some measures of income^[ACS 2019 subject definitions <https://www2.census.gov/programs-surveys/acs/tech_docs/subject_definitions/2019_ACSSubjectDefinitions.pdf> Pages 886-88. ]:
+
+<blockquote>
+**Income of Households** – This includes the income of the householder and all other individuals 15 years old and over in the household, whether they are related to the householder or not. Because many households consist of only one person, average household income is usually less than average family income. Although the household income statistics cover the past 12 months, the characteristics of individuals and the composition of households refer to the time of interview. Thus, the income of the household does not include amounts received by individuals who were members of the household during all or part of the past 12 months if these individuals no longer resided in the household at the time of interview. Similarly, income amounts reported by individuals who did not reside in the household during the past 12 months but who were members of the household at the time of interview are included. However, the composition of most households was the same during the past 12 months as at the time of interview.
+
+**Income of Individuals** – Income for individuals is obtained by summing the eight types of income for each person 15 years old and over. The characteristics of individuals are based on the time of interview even though the amounts are for the past 12 months.
+
+**Median Income** – The median divides the income distribution into two equal parts: one-half of the cases falling below the median income and one-half above the median. For households and families, the median income is based on the distribution of the total number of households and families including those with no income. The median income for individuals is based on individuals 15 years old and over with income. Median income for households, families, and individuals is computed on the basis of a standard distribution.
+
+**Median Earnings** – The median divides the earnings distribution into two equal parts: one- half of the cases falling below the median and one-half above the median. Median earnings is restricted to individuals 16 years old and over with earnings and is computed on the basis of a standard distribution. Median earnings figures are calculated using linear interpolation.
+
+**Per Capita Income** – Per capita income is the mean income computed for every man, woman, and child in a particular group including those living in group quarters. It is derived by dividing the aggregate income of a particular group by the total population in that group. (The aggregate used to calculate per capita income is rounded.
+</blockquote>
+
+<https://www.census.gov/quickfacts/fact/note/US/INC910221>
+
+
+## Median household and per capital income
+
+There is a distribution of income values across the counties of NC.
+
+```{r fig.height=6, fig.width=12}
+#| label: fig-ecdf-income
+#| fig-cap: "Cumulative distribution of househould and per capita income"
+#| fig-height: 6
+#| fig-width: 12
+#| column: screen-inset-right
+
+county_levels <- df_income  |>
+  filter(new_var == "i_med_fam_12mo") |>
+  arrange(-value) |>
+  pull(county) |>
+  unique()
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(df_income,
+            by = c("county", "region"),
+            multiple = "all") |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  mutate(county = factor(county, levels = county_levels)) |>
+  filter(year == 2019)
+
+p1 <- data_for_plot |>
+  ggplot() +
+  geom_density(aes(value, color = new_var, fill = new_var),
+               alpha = 0.15) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) + 
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0.02))) +
+  scale_color_viridis_d(end = 0.8) +
+  scale_fill_viridis_d(end = 0.8) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(#title = "",
+       subtitle = "Density",
+       x = NULL,
+       y = NULL,
+       color = NULL,
+       fill = NULL#,
+       #caption = my_caption
+       )
+
+p2 <- data_for_plot |>
+  ggplot() +
+  stat_ecdf(aes(value, color = new_var),
+            geom = "line",
+            linewidth = 1.5,
+            pad = FALSE) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) + 
+  scale_y_continuous(labels = label_percent(),
+                     expand = expansion(mult = c(0, 0))) +
+  scale_color_viridis_d(end = 0.8) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(#title = "",
+       subtitle = "Cumulative distribution",
+       x = NULL,
+       y = "Percent of counties",
+       color = NULL#,
+       #caption = my_caption
+       )
+
+p1 + p2 + 
+  plot_annotation(title = 'Median household and per capita income',
+                  caption = my_caption,
+                  theme = theme(plot.title = element_text(size = rel(2.0), face = "bold"))
+                  )
+
+```
+
+<br>
+
+In most counties there has been real median household income growth 1980-2019. Median income in some counties in rural and manufacturing regions have declined or remained flat.
+
+```{r fig.height=14, fig.width=12}
+#| label: fig-median-fam_inc-and-pci-geofacet
+#| fig-cap: "Median household income and per capita income"
+#| fig-height: 14
+#| fig-width: 12
+#| column: screen-inset-right
+#| eval: false
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(df_income,
+            by = "county",
+            multiple = "all") |>
+  mutate(county = factor(county, levels = county_levels)) |>
+  filter(!is.na(value))
+
+data_for_plot |>
+  ggplot() +
+  geom_line(aes(x = year, y = value, color = new_var),
+           linewidth = 1.5, alpha = 1, na.rm = TRUE) +
+  scale_x_continuous(breaks = c(1980, 2000, 2019)) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_size_continuous(range = c(3, 15), labels = label_number(scale_cut = cut_short_scale())) +
+  expand_limits(x = c(min(data_for_plot$year) - 2.55, max(data_for_plot$year) + 2.55),
+                y = 0) +
+  facet_wrap( ~ county, ncol = 10) +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(title = "NC county median household income and per capital income (1980 - 2019)", 
+       subtitle = "Adjusted for inflation (2020 dollars); counties sorted by median household income",
+       x = NULL,
+       y = "Income",
+       color = NULL,
+       caption = my_caption)
+
+```
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-median-fam_inc-and-pci
+#| fig-cap: "Median household income and per capita income (approximate geographical locations)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(df_income,
+            by = "county",
+            multiple = "all") |>
+  mutate(county = factor(county, levels = county_levels)) |>
+  filter(!is.na(value))
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(df_income,
+          by = c("county", "region"),
+            multiple = "all") |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  filter(!is.na(value))
+
+data_for_plot |>
+  ggplot() +
+  geom_line(aes(x = year, y = value, color = new_var),
+           linewidth = 2, alpha = 1, na.rm = TRUE) +
+  scale_x_continuous(breaks = c(1980, 2000, 2019)) +
+  scale_y_continuous(labels = label_number(scale_cut = cut_short_scale(),
+                                           prefix = "$")) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_size_continuous(range = c(3, 15), labels = label_number(scale_cut = cut_short_scale())) +
+  expand_limits(x = c(min(data_for_plot$year) - 2.5, max(data_for_plot$year) + 2.5),
+                y = 0) +
+  facet_geo( ~ county,
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        plot.title = element_text(size = rel(4.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(title = "NC county median household income and per capital income (1980 - 2019)", 
+       subtitle = "Adjusted for inflation (2020 dollars); counties sorted by median household income",
+       x = NULL,
+       y = "Income",
+       color = NULL,
+       caption = my_caption)
+
+```
+
+<br>
+
+## Income - Compound Annual Growth Rates (CAGR)
+
+The financial crisis of 2008+ is visible in the drop in income growth rate in the years thereafter (in fact negative growth rates in most counties). Interestingly, the growth rates in most counties were declining (but still positive) in the decade prior as well.
+
+```{r fig.height=10, fig.width=24}
+#| label: fig-cagr-fam_inc-and-pci
+#| fig-cap: "Compound annual growth rate (CAGR): household income and per capita income (approimate geographical locations)"
+#| fig-height: 10
+#| fig-width: 24
+#| column: screen-inset-right
+
+
+data_for_plot <- nc_county_boundaries |>
+  left_join(df_income_cagr,
+          by = "county",
+            multiple = "all") |>
+  mutate(county = if_else(county == "McDowell", "Mcdowell", county)) |>
+  filter(!is.na(cagr))
+
+data_for_plot |>
+  ggplot() +
+  geom_line(aes(x = year, y = cagr, color = new_var),
+           linewidth = 1.5, alpha = 1, na.rm = TRUE) +
+  scale_x_continuous(breaks = c(1980, 2000, 2019)) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_fill_viridis_d(end = 0.85) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_size_continuous(range = c(3, 15), labels = label_number(scale_cut = cut_short_scale())) +
+  expand_limits(x = c(min(data_for_plot$year) - 2.55, max(data_for_plot$year) + 2.55),
+                y = 0) +
+  #facet_wrap( ~ county, ncol = 10) +
+  facet_geo( ~ county,
+             grid = "us_nc_counties_grid1") +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        axis.title.y = element_text(hjust = 1),
+        plot.title = element_text(size = rel(2.0), face = "bold"),
+        legend.position = "top") +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(title = "NC county compound annual growth rate (CAGR):\nmedian household income and per capital income (1990 - 2019)", 
+       subtitle = "Adjusted for inflation (2020 dollars); counties in alphabetical order",
+       x = NULL,
+       y = "CAGR",
+       color = NULL,
+       caption = my_caption)
+
+```
+
+<br>
+
+## Maps of county-level median household income and per capita income
+
+```{r}
+#| label: prepare-codebook
+#| include: false
+
+# import from IPUMS NHGIS
+
+
+###### acs 2007-2011 codebook ######
+
+fname <- "./data/ipums/nhgis0020_csv/nhgis0020_ds184_20115_county_codebook.txt"
+ # NOTE: Need to combine sexes for Eductional attainment (this acs5 only)
+
+df_codebook_2011 <- tibble(
+  V1 = read_lines(fname,
+                  skip = 48)
+) |>
+  mutate(data_source = if_else(str_detect(V1, "^[A-Z]"), 
+                               V1, 
+                               NA_character_),
+         V1 = if_else(!str_detect(V1, "^[A-Z]"), 
+                      str_squish(V1), 
+                      NA_character_),
+         table = if_else(str_detect(V1, "^Table"), 
+                         V1,
+                         NA_character_),
+         source_code = if_else(str_detect(V1, "^Source"), 
+                         str_extract(V1, "[[:alnum:]]+$"),
+                         NA_character_),
+         universe = if_else(str_detect(V1, "^Universe"), 
+                            V1,
+                            NA_character_),
+  ) |>
+  select(-data_source) |>
+  filter(str_detect(V1, "[A-Z]")) |>
+  filter(row_number() <= 143,
+         !str_detect(V1, "^NHGIS")) |>
+  mutate(V1 = if_else(!is.na(table) | !is.na(universe) | !is.na(source_code),
+                      NA_character_,
+                      V1)) |>
+  fill(c(table, source_code, universe), .direction = "down") |>
+  separate(V1, into = c("variable", "description"), 
+           sep = ": ", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  filter(!str_detect(variable, "^Estimates|^Margin|REDISTRIBUTION"),
+         !is.na(variable))
+
+###### acs 2012-2016 codebook ######
+
+fname <- "./data/ipums/nhgis0020_csv/nhgis0020_ds225_20165_county_codebook.txt" 
+
+df_codebook_2016 <- tibble(
+  V1 = read_lines(fname,
+                  skip = 53)
+) |>
+  mutate(data_source = if_else(str_detect(V1, "^[A-Z]"), 
+                               V1, 
+                               NA_character_),
+         V1 = if_else(!str_detect(V1, "^[A-Z]"), 
+                      str_squish(V1), 
+                      NA_character_),
+         table = if_else(str_detect(V1, "^Table"), 
+                         V1,
+                         NA_character_),
+         source_code = if_else(str_detect(V1, "^Source"), 
+                         str_extract(V1, "[[:alnum:]]+$"),
+                         NA_character_),
+         universe = if_else(str_detect(V1, "^Universe"), 
+                            V1,
+                            NA_character_),
+  ) |>
+  select(-data_source) |>
+  filter(str_detect(V1, "[A-Z]")) |>
+  filter(row_number() <= 132,
+         !str_detect(V1, "^NHGIS")) |>
+  mutate(V1 = if_else(!is.na(table) | !is.na(universe) | !is.na(source_code),
+                      NA_character_,
+                      V1)) |>
+  fill(c(table, source_code, universe), .direction = "down") |>
+  separate(V1, into = c("variable", "description"), 
+           sep = ": ", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  filter(!str_detect(variable, "^Estimates|^Margin"),
+         !is.na(variable))
+
+###### acs 2017-2021 codebook ######
+
+fname <- "./data/ipums/nhgis0020_csv/nhgis0020_ds254_20215_county_codebook.txt" 
+
+df_codebook_2021 <- tibble(
+  V1 = read_lines(fname,
+                  skip = 52)
+) |>
+  mutate(data_source = if_else(str_detect(V1, "^[A-Z]"), 
+                               V1, 
+                               NA_character_),
+         V1 = if_else(!str_detect(V1, "^[A-Z]"), 
+                      str_squish(V1), 
+                      NA_character_),
+         table = if_else(str_detect(V1, "^Table"), 
+                         V1,
+                         NA_character_),
+         source_code = if_else(str_detect(V1, "^Source"), 
+                         str_extract(V1, "[[:alnum:]]+$"),
+                         NA_character_),
+         universe = if_else(str_detect(V1, "^Universe"), 
+                            V1,
+                            NA_character_),
+  ) |>
+  select(-data_source) |>
+  filter(str_detect(V1, "[A-Z]")) |>
+  filter(row_number() <= 133,
+         !str_detect(V1, "^NHGIS")) |>
+  mutate(V1 = if_else(!is.na(table) | !is.na(universe) | !is.na(source_code),
+                      NA_character_,
+                      V1)) |>
+  fill(c(table, source_code, universe), .direction = "down") |>
+  separate(V1, into = c("variable", "description"), 
+           sep = ": ", 
+           extra = "merge", 
+           fill = "right"
+  ) |>
+  filter(!str_detect(variable, "^Estimates|^Margin"),
+         !is.na(variable))
+
+
+```
+
+
+```{r}
+
+fname <- "./data/ipums/nhgis0020_csv/nhgis0020_ds184_20115_county.csv"
+d_tmp <- read_csv(fname,
+                  show_col_types = FALSE) |>
+  filter(STATEA == "37") |>
+  select(-c(STUSAB, REGIONA, DIVISIONA, COUSUBA:PUMAA, BTTRA, BTBGA, NAME_E, NAME_M)) |>
+  pivot_longer(cols = MPSE001:MRUM001,
+               names_to = "variable",
+               values_to = "value"
+               ) |>
+  # TODO add MOE later
+  filter(str_sub(variable, start = 4L, end = 4L) == "E") |>
+  select(-c(STATE, STATEA)) |>
+  clean_names() |>
+  mutate(county = str_remove(county, " County")) |>
+  inner_join(df_codebook_2011,
+             by = c("variable")
+  ) 
+
+d_tmp_ed <- d_tmp |>
+  filter(str_detect(table, "^Table 1: Sex by Educational"),
+         description != "Total"
+         ) |>
+  # Consolidate male and female into totals for each variable
+  #filter(!description %in% c("Male", "Female")) |>
+  mutate(sex_var = if_else(str_detect(description, "^Male|^Female"),
+                           TRUE,
+                           FALSE),
+         sex_var_description = if_else(description %in% c("Male", "Female"),
+                               "Gender Total",
+                               NA_character_),
+         sex_var_description = if_else(is.na(sex_var_description),
+                                       str_remove(description, "^[[:alpha:]]+[:][ ]"),
+                                       sex_var_description)
+         ) |>
+  group_by(year, geoid, county, sex_var, sex_var_description) |>
+    reframe(value = sum(value),
+              description = sex_var_description) |>
+  ungroup()
+    
+# TODO: Better to consolidate ed attainment into smaller categories now?
+
+d_2011 <- bind_rows(
+  d_tmp |>
+    filter(!str_detect(table, "^Table 1: Sex by Educational")),
+  d_tmp_ed |>
+    inner_join(d_tmp |>
+                 filter(str_detect(table, "^Table 1: Sex by Educational")) |>
+                 distinct(geoid, table, source_code, universe),
+               by = c("geoid")
+               )
+)
+
+```
+
+```{r}
+#| label: prepare-data-1
+#| include: false
+#| eval: false
+
+# TODO: delete this (it's just a reference)
+
+fname <- "./data/ipums/nhgis0018_csv/nhgis0018_ts_geog2010_county.csv"
+d_tmp <- read_csv(fname,
+                  show_col_types = FALSE) |>
+  filter(STATEA == "37") |>
+  pivot_longer(cols = !starts_with(c("GISJOIN", "STATE", "STATEA", "COUNTY", "COUNTYA", "GEOGYEAR", "DATAYEAR")),
+               names_to = "estimate",
+               values_to = "value"
+               ) |>
+  mutate(core = str_sub(estimate, 1, 5)) |>
+  group_by(core) |>
+  reframe(lower = value[2],
+         upper = value[3]) |>
+  ungroup() |>
+  filter(estimate == core) |>
+  select(-c(STATE, STATEA, core)) |>
+  clean_names() |>
+  mutate(county = str_remove(county, " County")) |>
+  inner_join(df_codebook,
+             by = c("estimate" = "variable")
+  )
+
+
+```
+
+```{r}
+#| label: prepare-data-2
+#| include: false
+#| eval: false
+
+age_categories <- tribble(
+  ~agegroup_start,    ~agegroup_new,
+  0, "0 to 4 years",
+  5, "5 to 9 years",
+  10, "10 to 14 years",
+  15, "15 to 19 years",
+  20, "20 to 24 years",
+  25, "25 to 29 years",
+  30, "30 to 34 years",
+  35, "35 to 39 years",
+  40, "40 to 44 years",
+  45, "45 to 49 years",
+  50, "50 to 54 years",
+  55, "55 to 59 years",
+  60, "60 to 64 years",
+  65, "65 to 69 years",
+  70, "70 to 74 years",
+  75, "75 to 79 years",
+  80, "80 to 84 years",
+  85, "85 years and older"
+  )
+
+d_tmp2 <- d_tmp |>
+  mutate(agegroup_start_orig = as.numeric(str_extract(agegroup, "\\d+")),
+         agegroup_start_orig = if_else(str_detect(agegroup, "Under"),
+                                  0,
+                                  agegroup_start_orig)
+         ) |>
+  inner_join(age_categories,
+             join_by(closest(agegroup_start_orig >= agegroup_start))
+             )
+
+df_sex_by_race_tmp <- d_tmp2 |>
+  summarize(.by = c(gisjoin, geogyear, datayear, county, countya, race, sex, data_source, agegroup_start, agegroup_new),
+           value = sum(value),
+           lower = sum(lower), # TODO: fix this (it's more complicated than this)
+           upper = sum(upper)  # TODO: fix this (it's more complicated than this)
+           ) |>
+  inner_join(county_region_df,
+             by = "county")
+
+# TODO The above is too much work. I'd rather get what I can from tidycensus get_acs()
+```
+
+
+```{r}
+#| label: prepare-data-3
+#| include: false
+
+# 2021 total estimates
+
+v21 <- load_variables(2021, "acs5", cache = TRUE) |>
+  select(-geography) 
+
+my_vars <- c("B07011_001", #Estimate!!Median income in the past 12 months --!!Total:
+             #"B06011_001", #Estimate!!Median income in the past 12 months --!!Total:
+             #"B19326_001", #Estimate!!Median income in the past 12 months (in 2021 inflation-adjusted dollars) --!!Total (dollars):
+             # I confirmed that all three of the above median income variables return the same amount, so I need only one
+             "B19301_001", #Estimate!!Per capita income in the past 12 months (in 2021 inflation-adjusted dollars))
+             "B20004_001", #Estimate!!Total:, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER""
+             "B20004_002", #Estimate!!Total:!!Less than high school graduate, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+             "B20004_003", #Estimate!!Total:!!High school graduate (includes equivalency), MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+             "B20004_004", #Estimate!!Total:!!Some college or associate's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+             "B20004_005", #Estimate!!Total:!!Bachelor's degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+             "B20004_006" #Estimate!!Total:!!Graduate or professional degree, MEDIAN EARNINGS IN THE PAST 12 MONTHS (IN 2021 INFLATION-ADJUSTED DOLLARS) BY SEX BY EDUCATIONAL ATTAINMENT FOR THE POPULATION 25 YEARS AND OVER
+)
+
+v21_subset <- v21 |>
+  filter(name %in% my_vars) |> # str_detect(concept, "^SEX BY AGE")) |>
+  mutate(label = str_remove_all(label, ":")) |>
+  separate(label,
+           into = c("var_type", "variable", "description"),
+           sep = "!!",
+           fill = "right") |>
+  mutate(across(.cols =  where(is.character), str_squish),
+         description = case_when(
+           name == "B20004_001"    ~ "Median income - all education levels",
+           name == "B07011_001"    ~ "Median income in the past 12 months",
+           name == "B19301_001"    ~ "Per capita income in the past 12 months",
+           TRUE                    ~ description
+         ),
+         var_new = case_when(
+           description == "Median income in the past 12 months"     ~ "med_income",
+           description == "Per capita income in the past 12 months" ~ "pci",
+           description == "Median income - all education levels"    ~ "0_years_ed",
+           description == "Less than high school graduate"          ~ "10_years_ed",
+           str_detect(description, "High school graduate")          ~ "12_years_ed",
+           str_detect(description, "Some college")                  ~ "14_years_ed",
+           str_detect(description, "Bachelor's degree")             ~ "16_years_ed",
+           description == "Graduate or professional degree"         ~ "19_years_ed",
+           TRUE                                                     ~ "ERROR"
+         )
+         ) |>
+  select(-variable)
+
+d_ed_income <- get_acs(geography = "county", 
+              state = "NC",
+              survey = "acs5",
+              #table = "B01001",
+              variables = my_vars,
+              geometry = FALSE,
+              # summary_var = c("B01001", "B01001_002", "B01001_026"),
+              cache_table = TRUE
+              ) |>
+  inner_join(v21_subset,
+             join_by(variable == name)) |>
+  mutate(NAME = str_extract(NAME, "^.+(?= County)"),
+         years_ed = if_else(str_detect(variable, "B20004"),
+                            as.numeric(str_extract(var_new, "^\\d+")),
+                            NA_real_),
+         var_new = if_else(!is.na(years_ed),
+                           "ed_attainment",
+                           var_new)
+         ) |>
+  rename(county = NAME)
+
+```
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-county-median-income
+#| fig-cap: "NC median income (2021)"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+if(!file.exists("./figures/nc-map-county-median-income-2021.png")) {
+  
+  data_for_plot <- nc_county_boundaries |>
+    inner_join(d_ed_income |>
+                 filter(variable %in% c("B07011_001") #, "B19301_001", "B20004_001") # TODO add the others and do a faceted plot
+                        ),
+               by = c("geoid" = "GEOID")
+    )
+  
+  med_value = data_for_plot |>
+    pull(estimate) |>
+    median()
+  
+  variable_set_for_plot <- data_for_plot |>
+    mutate(variable = glue("{variable}: {description}")) |>
+    distinct(variable) |>
+    pull(variable) |>
+    glue_collapse(sep = ", ", last = " and ")
+  
+  p1 <- data_for_plot |>
+    ggplot() +
+    geom_sf(aes(fill = estimate), color = "black", linewidth = 0.1, alpha = 0.8) +
+    geom_sf(data = nc_state_boundary,
+            color = "grey40", linewidth = 1, fill = NA) +
+    geom_sf(data = nc_county_boundaries,
+            color = "grey10", linewidth = 0.1, fill = NA) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", linewidth = 1, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "peru", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", linewidth = 1, fill = NA, alpha = 1) +
+    scale_fill_gradient2(high = "navyblue", low = "mediumaquamarine", #"yellowgreen", # "lightskyblue",
+                         midpoint = log10(med_value),
+                         trans = "log10",
+                         labels = label_number(scale_cut = cut_short_scale(), prefix = "$")
+    ) +
+    #facet_wrap(~variable) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = glue("North Carolina median household income"),
+         subtitle = glue("ACS 2021", 
+                         ": {variable_set_for_plot}",
+                         "\nWhite is median: ${comma(round(med_value))}",
+                         #"\nLower bound capped at 10 people / sq_mi",
+                         "; colored boundaries are region designations"),
+         fill = "Per year",
+         caption = my_caption)
+  
+  ggsave("./figures/nc-map-county-median-income-2021.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-county-median-income-2021.png")
+
+```
+
+<br>
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-county-pci
+#| fig-cap: "NC median income (2021)"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+if(!file.exists("./figures/nc-map-county-pci-2021.png")) {
+  
+  data_for_plot <- nc_county_boundaries |>
+    inner_join(d_ed_income |>
+                 filter(variable %in% c("B19301_001") #"B07011_001") #, "B19301_001", "B20004_001") # TODO add the others and do a faceted plot
+                        ),
+               by = c("geoid" = "GEOID")
+    )
+  
+  med_value = data_for_plot |>
+    pull(estimate) |>
+    median()
+  
+  variable_set_for_plot <- data_for_plot |>
+    mutate(variable = glue("{variable}: {description}")) |>
+    distinct(variable) |>
+    pull(variable) |>
+    glue_collapse(sep = ", ", last = " and ")
+  
+  p1 <- data_for_plot |>
+    ggplot() +
+    geom_sf(aes(fill = estimate), color = "black", linewidth = 0.1, alpha = 0.8) +
+    geom_sf(data = nc_state_boundary,
+            color = "grey40", linewidth = 1, fill = NA) +
+    geom_sf(data = nc_county_boundaries,
+            color = "grey10", linewidth = 0.1, fill = NA) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", linewidth = 1, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = mountain_boundary,
+            color = "peru", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "white", linewidth = 2, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", linewidth = 1, fill = NA, alpha = 1) +
+    scale_fill_gradient2(high = "navyblue", low = "mediumaquamarine", #"yellowgreen", # "lightskyblue",
+                         midpoint = log10(med_value),
+                         trans = "log10",
+                         labels = label_number(scale_cut = cut_short_scale(), prefix = "$")
+    ) +
+    #facet_wrap(~variable) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = glue("North Carolina per capita income"),
+         subtitle = glue("ACS 2021", 
+                         ": {variable_set_for_plot}",
+                         "\nWhite is median: ${comma(round(med_value))}",
+                         #"\nLower bound capped at 10 people / sq_mi",
+                         "; colored boundaries are region designations"),
+         fill = "Per year",
+         caption = my_caption)
+  
+  ggsave("./figures/nc-map-county-pci-2021.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-county-pci-2021.png")
+
+```
+
+<br>
+
+How big is the margin of error?
+
+```{r fig.height=10, fig.width=14}
+#| label: fig-nc-pci-plot
+#| fig-cap: "NC per capita income (2021)"
+#| fig-height: 10
+#| fig-width: 14
+#| column: screen-inset-right
+
+data_for_plot <- nc_county_boundaries |>
+  inner_join(d_ed_income |>
+               filter(variable %in% c("B19301_001") #"B07011_001") #, "B19301_001", "B20004_001") # TODO add the others and do a faceted plot
+               ),
+             by = c("geoid" = "GEOID", "county")
+  )
+  
+variable_set_for_plot <- data_for_plot |>
+    mutate(variable = glue("{variable}: {description}")) |>
+    distinct(variable) |>
+    pull(variable) |>
+    glue_collapse(sep = ", ", last = " and ")
+
+data_for_plot |>
+  mutate(county = fct_reorder(county, estimate)) |>
+  ggplot() +
+  geom_errorbarh(aes(xmin = estimate - moe, xmax = estimate + moe, y = county, color = region),
+                 linewidth = 0.2, height = 0.2) +
+    geom_point(aes(x = estimate, y = county, color = region)) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale(), prefix = "$")) +
+  scale_color_manual(values = region_colors$color) +
+  facet_wrap(region ~ ., scales = "free_y") +
+  theme(legend.position = "none",
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "Median per capita income by region",
+    subtitle = glue("ACS 2021; {variable_set_for_plot}", 
+                    "\nError bars show margin of error"),
+    x = "Per capita income",
+    y = NULL,
+    caption = my_caption
+  )
+    
+
+```
+
+<br>

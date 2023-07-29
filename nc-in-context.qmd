@@ -1,0 +1,907 @@
+# NC in context
+
+```{r}
+#| label: setup
+#| echo: false
+#| warning: false
+#| message: false
+
+source("./scripts/my-setup.R") # use for all explorationXX.qmd files
+source("./scripts/constants2.R")
+
+# TODO: create functions2.R
+source("./scripts/functions2.R") 
+
+# library(geofacet)
+# library(ggridges)
+# library(ggrepel)
+
+#library(elevatr)
+library(terra)
+library(stars)
+library(rcartocolor)
+library(fs)
+
+library(english) #for ordinal() to spell out words
+library(geomtextpath)
+
+# install.packages("Rcpp", repos="https://rcppcore.github.io/drat")
+# to address https://github.com/rspatial/terra/issues/30 until the next Rccp release
+# "Error in x$.self$finalize() : attempt to apply non-function"
+# which I only see when running 'quarto render' from the command line 2022-11-25
+
+
+```
+
+```{r}
+nc_city_boundaries <- tar_read(nc_city_boundaries)
+
+county_region_df <- tar_read(nc_county_region_mapping)
+
+nc_county_boundaries <- tar_read(nc_county_boundaries) |>
+  inner_join(
+    county_region_df,
+    by = "county"
+  )
+
+urban_crescent_boundary <- nc_county_boundaries |>
+  filter(county %in% urban_crescent) |>
+  summarize(boundary = st_union(geometry))
+
+coastal_boundary <-  nc_county_boundaries |>
+  filter(county %in% coastal) |>
+  summarize(boundary = st_union(geometry))
+
+mountain_boundary <- nc_county_boundaries |>
+  filter(county %in% mountain) |>
+  summarize(boundary = st_union(geometry))
+
+manufacturing_boundary <- nc_county_boundaries |>
+  filter(county %in% manufacturing) |>
+  summarize(boundary = st_union(geometry))
+
+# agriculture boundary is everything else
+
+nc_state_boundary <- st_union(nc_county_boundaries)
+nc_state_boundary_sf <- st_as_sf(nc_state_boundary)
+
+```
+
+```{r}
+
+d_nc_mt <- tar_read(nc_mt)
+
+d_pop_state <- tar_read(pop_state)
+
+d_state_rank <- d_pop_state |>
+  st_drop_geometry() |>
+  group_by(year) %>%
+  mutate(state_pop_rank = n() - rank(pop) + 1) |>
+  ungroup() |>
+  arrange(year, state_pop_rank)
+
+nc_rank <- d_state_rank |>
+  filter(year == 2020,
+         state == "North Carolina") |>
+  pull(state_pop_rank)
+
+# english::ordinal(nc_rank)
+
+# state_levels <- d_state_rank %>%
+#   filter(state_pop_rank <= 20, # more than 10, since some may have dropped out of top 10
+#          year == 2020) |>
+#   pull(state)
+
+d_pop_nationwide <- d_pop_state |>
+  st_drop_geometry() |>
+  group_by(year) |>
+  summarize(pop = sum(pop)) |>
+  ungroup() |>
+  mutate(state = "nationwide") |>
+  relocate(state, .before = year)
+
+d_state_growth <- bind_rows(
+  d_pop_nationwide,
+  d_pop_state |>
+    st_drop_geometry() 
+  ) |>
+  mutate(growth_index = 1) |>
+  arrange(year) |>
+  group_by(state) %>%
+  mutate(pct_change = pop / lag(pop) - 1,
+         cagr = (pop / lag(pop))^(1 / (year - lag(year))) - 1) |>
+  ungroup() |>
+  group_by(year) %>%
+  mutate(growth_index = if_else(year > 2000, lag(growth_index) + lag(growth_index) * pct_change, 1),
+         state_growth_rank = n() - rank(cagr) + 1) |>
+  ungroup() |>
+  arrange(year, state_growth_rank)
+
+```
+
+```{r}
+
+d_pop_2000_tract <- tar_read(pop_2000_tract)
+d_pop_2010_tract <- tar_read(pop_2010_tract)
+d_pop_2020_tract <- tar_read(pop_2020_tract)
+
+d_pop_tract <- bind_rows(
+  d_pop_2000_tract,
+  d_pop_2010_tract,
+  d_pop_2020_tract
+) |>
+  filter(tract_name != "0") |>
+  relocate(tract_name, .before = year)
+
+d_pop_tract_long <- d_pop_tract |>
+  pivot_longer(cols = c(starts_with("pop")),
+               names_to = "variable",
+               values_to = "value") |>
+  mutate(area_m2 = st_area(geometry),
+         area_mi2 = drop_units(area_m2 / 2589988.10), # m^2 in 1 mi^2
+         density = value / area_mi2,
+         density = if_else(value == 0, 0, density),
+         variable = as_factor(variable)) # keeps current order
+  
+```
+
+<br>
+
+North Carolina is the USA's `r english::ordinal(nc_rank)` most populous state as of the 2020 decennial census. One hundred counties extend from the Appalachian mountains in the west to the Atlantic Ocean in the east. The population has been growing faster than the national average as people move from other states to enjoy the temperate climate, lower cost of living compared to more populated coastal states, the attractions of the mountains and the coast, and the dynamic economies in the urban crescent that runs through the middle of the state.
+
+## Physical geography
+
+The primary geological features of the South Atlantic states are larger than North Carolina: the southern Appalachian "Blue Ridge", the Piedmont, the fall line abruptly marking the edge of the mid-Atlantic coastal plane, and the coast. Throughout the south Atlantic states, most rivers flow southeast to the coast .
+
+```{r fig.height=7, fig.width=7}
+#| label: fig-southeastern-us-natural-features-usgs-sir
+#| fig-cap: "Study area and ecoregions in North Carolina, South Carolina, Georgia, and the surrounding States. Figure 1 page 12 in Weaver, J.C., Feaster, T.D., and Gotvald, A.J., 2009, [Magnitude and frequency of rural floods in the Southeastern United States, through 2006—Volume 2, North Carolina: U.S. Geological Survey Scientific Investigations Report 2009–5158](https://pubs.usgs.gov/sir/2009/5158/pdf/sir2009-5158.pdf)"
+#| fig-height: 7
+#| fig-width: 7
+
+knitr::include_graphics("./data/usgs/sir2009-5158/se-map.png")
+
+```
+
+<br>
+
+The elevation varies from mountains over 6600 ft in the Blue Ridge to the vast coastal plane not much above sea level. The tallest mountain east of the Rockies is in North Carolina: [Mt. Mitchell](https://en.wikipedia.org/wiki/Mount_Mitchell) (6684 ft 2037 m).
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-elev
+#| fig-cap: "NC elevation"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+
+if(!file.exists("./data/elevation-data/nc-elevation.tif")) {
+  
+  # this part is done; don't run again unless recreating nc-tile-fact2.tif
+  tile_fname_list <- fs::dir_ls(path = "./data/elevation-data/",
+                                regexp = "tile-[0-9]+-[0-9]+.tif")
+  
+  tiles_vrt <- vrt(tile_fname_list)
+  
+  nc_tiles <- aggregate(tiles_vrt, fact=2, fun="mean",
+                        filename="./data/elevation-data/nc-tile-fact2.tif",
+                        overwrite=TRUE)
+  
+  nc_tiles_cropped <- terra::crop(rast("./data/elevation-data/nc-tile-fact2.tif"),
+                                  ext(nc_state_boundary_sf)
+  )
+  
+  nc_elev <-
+    terra::mask(
+      terra::crop(rast("./data/elevation-data/nc-tile-fact2.tif"),
+                  ext(nc_state_boundary_sf)
+      ),
+      nc_state_boundary_sf
+    )
+  
+  #nc_elev_ft <- terra::subst(nc_elev, from = nc_elev[[1]], to = nc_elev[[1]] * 0.3048)
+  
+  nc_elev_ft <- nc_elev * 3.28084
+  
+  writeRaster(nc_elev_ft, "./data/elevation-data/nc-elevation.tif",
+              overwrite = TRUE)
+  # TODO: change layer name from elevation_m to elevation_ft
+  # TODO: downsample (aggregate()) before saving
+}
+
+nc_elev_ft <- rast("./data/elevation-data/nc-elevation.tif")
+
+# since we are usign sqrt() transformation in the fill color, we can't have any negative elevations
+fix_neg_elevation <- function(x) {
+  ifelse(x < 0, 
+         0,
+         x)
+}
+
+xx_spatRaster2 <- app(nc_elev_ft,
+                      fix_neg_elevation
+)
+
+mt_to_plot <- d_nc_mt |>
+  filter(rank == 1) |>
+  mutate(name_label = glue("{name}\n{elevation}"))
+
+ggplot() +
+  geom_stars(data = st_as_stars(xx_spatRaster2),
+             downsample = c(5, 5, 0),
+             na.rm = TRUE,
+             alpha = 0.7) +
+  geom_sf(data = nc_county_boundaries,
+          fill = NA, size = 1, color = "grey40") +
+  geom_sf(data = nc_state_boundary,
+          fill = NA, size = 2, color = "grey40") +
+  geom_sf(data = mt_to_plot,
+          size = 3) +
+  # geom_sf_text(data = mt_to_plot,
+  #         aes(label = name_label), 
+  #         size = 8, hjust = 0, nudge_x = 5000) +
+  scale_fill_carto_c(name = "Elevation (ft): ",
+                     type = "diverging", 
+                     palette = "Earth",
+                     direction = -1,
+                     na.value = NA,
+                     trans = "sqrt",
+                     breaks = c(0, 500, 2500, 6000)
+                     ) +
+  theme_map() +
+  theme(
+    legend.position = c(0.2, 0.3), # "none",
+    plot.title = element_text(size = rel(4.0), face = "bold")) +
+  labs(title = "NC elevation",
+       subtitle = "including location of Mt Mitchell",
+       caption = "Elevation data: opentopography.com; plot: Daniel Moul")
+
+```
+
+<br>
+
+The largest cities are in the urban crescent, which spans the Piedmont from Charlotte to Raleigh.
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-usgs
+#| fig-cap: "North Carolina. Screenshot from [The National Map](https://apps.nationalmap.gov/viewer/) courtesy of the U.S. Geological Survey  ([USGS](https://usgs.gov)). The National Map includes data from National Boundaries Dataset, 3DEP Elevation Program, Geographic Names Information System, National Hydrography Dataset, National Land Cover Database, National Structures Dataset, and National Transportation Dataset; USGS Global Ecosystems; U.S. Census Bureau TIGER/Line data; USFS Road Data; Natural Earth Data; U.S. Department of State Humanitarian Information Unit; and NOAA National Centers for Environmental Information, U.S. Coastal Relief Model. Data refreshed June, 2022. Screenshot 2022-11-16."
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+knitr::include_graphics("./images/nc-from-usgs-apps.nationalmap.gov.png")
+
+```
+
+<br>
+
+## US state population and population growth
+
+Over the twenty years from 2000 to 2020, North Carolina surpassed New Jersey and Michigan to become the `r english::ordinal(nc_rank)` most populous state. @fig-us-state-pop-rank shows NC and the subset of states with population larger than NC reported in the decennial censuses 2000-2020.
+
+```{r fig.height=6, fig.width=5}
+#| label: fig-us-state-pop-rank
+#| fig-cap: "Most populous states 2000-2020"
+#| fig-height: 6
+#| fig-width: 5
+## column: screen-inset-right
+
+
+data_for_plot <- d_state_rank %>%
+  group_by(state) |>
+  mutate(pct_change = pop / lag(pop, defaul = NA_real_) - 1) |>
+  ungroup() |>
+  filter(state_pop_rank <= 20)
+
+state_subset <- data_for_plot |>
+  filter(state_pop_rank <= 10) |>
+  distinct(state) |>
+  pull(state)
+
+data_for_labels_2000 <- data_for_plot |>
+  filter(year == 2000,
+         state %in% state_subset)
+
+data_for_labels_2020 <- data_for_plot |>
+  filter(year == 2020,
+         state %in% state_subset)
+
+
+data_for_plot |>
+  #filter(state_pop_rank <= 10) |>
+  filter(state %in% state_subset) |>
+  ggplot(aes(year, pop, color = state, group = state)) +
+  geom_line() +
+  geom_point(size = 2) +
+  # geom_textpath(aes(label = state),
+  #               hjust = 0.2,
+  #               vjust = 0) +
+  geom_text_repel(data = data_for_labels_2000,
+            aes(x = 2000, label = state),
+            hjust = 1, nudge_x = -0.7, direction = "y",
+            #color = "black"
+            ) +
+  geom_text_repel(data = data_for_labels_2020,
+            aes(x = 2020, label = state),
+            hjust = 0, nudge_x = 0.7, direction = "y",
+            #color = "black"
+            ) +
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
+  scale_y_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(1995, 2025),
+                #y = c(7e6, NA)
+                ) +
+  theme(legend.position = "none",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        #axis.text = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "Most populous states",
+    subtitle = "Last three decennial census results",
+    x = NULL,
+    y = "Population (log10 scale)",
+    caption = my_caption
+  )
+  
+```
+
+<br>
+
+North Carolina grew faster than the national average as reported in the last two decennial census counts. @fig-us-state-growth-rank shows the subset of states that grew faster than the national average in the ten years to 2010 or 2020.
+
+```{r fig.height=10, fig.width=6}
+#| label: fig-us-state-growth-rank
+#| fig-cap: "US states growth in population 2000-2020"
+#| fig-height: 10
+#| fig-width: 6
+#| column: screen-inset-right
+
+data_for_plot <- d_state_growth  |>
+  filter(!is.na(pct_change)) #removes 2000 data
+
+nationwide_rank <- data_for_plot |>
+  filter(state == "nationwide") |>
+  pull(state_growth_rank) |>
+  max()
+
+state_subset <- data_for_plot |>
+  filter(state_growth_rank <= nationwide_rank) |>
+  distinct(state) |>
+  pull(state)
+
+data_for_labels_2010 <- data_for_plot |>
+  filter(year == 2010,
+         state %in% state_subset) |>
+  mutate(state = fct_reorder(state, state_growth_rank))
+
+data_for_labels_2020 <- data_for_plot |>
+  filter(year == 2020,
+         state %in% state_subset) |>
+  mutate(state = fct_reorder(state, state_growth_rank))
+
+data_for_plot_labelline <- data_for_plot |>
+  filter(state %in% c("North Carolina", "nationwide"))
+
+n_states_in_plot <- data_for_plot |>
+  filter(state %in% state_subset) |>
+  distinct(state) |>
+  nrow()
+
+data_for_plot |>
+  #filter(state_pop_rank <= 10) |>
+  filter(state %in% state_subset) |>
+  ggplot(aes(year, pct_change, color = state, group = state)) +
+  geom_line() +
+  geom_point(size = 2) +
+  geom_text_repel(data = data_for_labels_2010,
+            aes(x = 2010, y = pct_change, label = state, color = state),
+            hjust = 1, nudge_x = -0.7, direction = "y",
+            size = 3, alpha = 0.8,
+            inherit.aes = FALSE, box.padding = 0.1
+            #color = "black"
+            ) +
+  geom_text_repel(data = data_for_labels_2020,
+            aes(x = 2020, y = pct_change, label = state, color = state),
+            hjust = 0, nudge_x = 0.7, direction = "y",
+            size = 3, alpha = 0.8,
+            inherit.aes = FALSE, box.padding = 0.1
+            #color = "black"
+            ) +
+  geom_labelline(data = data_for_plot_labelline,
+                aes(label = state)) +
+  scale_x_continuous(breaks = c(2010, 2020)) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_viridis_d(end = 0.85) +
+  expand_limits(x = c(2005, 2025),
+                y = c(0, NA)
+                ) +
+  theme(legend.position = "none",
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold")) +
+  labs(
+    title = "USA state percent population change",
+    subtitle = glue("Showing average (nationwide) growth rate and the {n_states_in_plot} states", 
+                    "\nwith higher growth in either period",
+                    "\nDataset includes 50 states, D.C., and Puerto Rico. Ten-year growth rates."),
+    x = NULL,
+    y = "Percent change over prior 10 years",
+    caption = my_caption
+  )
+  
+```
+
+<br>
+
+In nearly all states the growth rate was lower in the ten years to 2020 compared to the ten years to 2010. 
+
+```{r fig.height=8, fig.width=10}
+#| label: fig-us-state-pct-change-by-pop-scatter
+#| fig-cap: "USA state population growth rate by state population"
+#| fig-height: 8
+#| fig-width: 10
+#| column: screen-inset-right
+
+data_for_plot <- d_state_growth  |>
+  mutate(year = factor(year)) |>
+  filter(!is.na(pct_change)) # removes 2000 data
+
+data_for_plot_label <- d_state_growth  |>
+  mutate(year = factor(year)) |>
+  filter(!is.na(pct_change)) |> # removes 2000 data
+  filter(state %in% c("North Carolina", "nationwide"))
+
+data_for_plot |>
+  ggplot(aes(pop, pct_change, color = year)) +
+  geom_line(aes(group = state), 
+            linewidth = 0.25, alpha = 0.4,
+            show.legend = FALSE) +
+  geom_point(aes(size = pop), #size = 2, 
+             alpha = 0.6) +
+  geom_text(aes(label = if_else(year == 2010, state, NA_character_)),
+            hjust = 0.8, vjust = 0, nudge_y = 0.005,
+            check_overlap = TRUE,
+            na.rm = TRUE, show.legend = FALSE) +
+  geom_label(data = data_for_plot_label,
+             aes(label = if_else(year == 2010, state, NA_character_)),
+             hjust = 0.8, vjust = 0, nudge_y = 0.005, size = 4,
+             na.rm = TRUE, show.legend = FALSE) +
+  scale_x_log10(labels = label_number(scale_cut = cut_short_scale())) +
+  scale_y_continuous(labels = label_percent()) +
+  scale_color_viridis_d(end = 0.85) +
+  scale_size_continuous(range = c(1, 10),
+                        trans = "log10") +
+  expand_limits(x = c(300000, NA)) +
+  theme(legend.position = "top",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        plot.title = element_text(size = rel(2.0), face = "bold"),) +
+  guides(size = "none") +
+  labs(
+    title = "USA state percent population change\nby state population size",
+    subtitle = glue("There is no apparent impact of state size on growth rate", 
+                    "\nDataset includes 50 states, D.C., and Puerto Rico. Ten-year growth rates."),
+    x = "State population (log10 scale)",
+    y = "Percent change over prior 10 years",
+    caption = my_caption
+  )
+
+```
+
+<br>
+
+There were some exceptions:
+
+```{r}
+data_for_table <- 
+  inner_join(
+    d_state_growth  |> 
+      arrange(year) |>
+      group_by(state) |>
+      filter(pct_change >= lag(pct_change)) |>
+      ungroup() |>
+      select(state),
+    d_state_growth |>
+      select(state, year, pct_change) |>
+      filter(year %in% c(2010, 2020)),
+    by = "state",
+    multiple = "all") |>
+  pivot_wider(names_from = c(year), values_from = c(pct_change),
+              names_prefix = "pct_change_") |>
+  arrange(desc(pct_change_2020)) 
+
+n_rows_for_table <- nrow(data_for_table)
+
+data_for_table |>
+  gt() |>
+  tab_header(md(glue("**{english::Words(n_rows_for_table - 1)} states and D.C. grew faster<br>in the 10 years to 2020**"))) |>
+  tab_options(table.font.size = 10) |>
+  fmt_percent(starts_with("pct_"), decimals = 0) |>
+  as_raw_html()
+  
+```
+
+<br>
+
+## North Carolina counties
+
+```{r}
+#| label: define-label-locations
+#| warning: false
+
+# adjust some labels up or down from county centroid to keep text from overlapping
+
+offset <- 2 * 1609.34 # meters per mile
+
+nc_county_centroids_adj <- nc_county_boundaries %>%
+  mutate(
+    cent = st_centroid(geometry),
+    needs_offset = 0,
+    y_trans = 0
+  ) |> 
+  mutate(
+    needs_offset = case_when(
+      county %in% c("Rutherford", "Jackson", "Currituck", "Montgomery", "New Hanover")   ~   1.0,
+      county %in% c("Orange", "Mecklenburg")                                             ~   1.5,
+      county %in% c("Chowan", "Stanley", "Brunswick")                                    ~  -1.0,
+      county %in% c("Gaston", "Onslow")                                                  ~  -2.0,
+      county %in% c("Wayne")                                                             ~  -2.5,
+      TRUE                                                                               ~     0
+    ),
+    y_trans = offset * needs_offset
+  ) %>%
+  mutate(
+    trans = map2(0, y_trans, ~ st_point(c(.x, .y))),
+    cent_new = cent + trans 
+  ) %>%
+  st_set_geometry(.$cent_new) |>
+  st_set_crs(my_proj) |>
+  select(-c(cent, needs_offset, y_trans, trans, cent_new))
+
+```
+
+```{r}
+#| label: define-nc-military-bases
+
+## I assume military bases increase the percentage of non-white population in their areas
+
+# On the website of the Dept of Military and Veterans Affiars [there is a map](https://www.milvets.nc.gov/benefits-services/military-bases-north-carolina) and a discription of the bases. There is an option to download base name and address data as a [csv file](https://www.milvets.nc.gov/tablefield/export/paragraph/412/field_map_data/en/0) which indicates which counties have military bases (but not their lat/lon coordinates). There are 14, so it's not too much to manually look up.
+
+nc_mil_base <- read_csv("./data/nc-military-bases.csv",
+                        skip = 4,
+                        show_col_types = FALSE) |>
+  mutate(lat = round(lat, digits = 5),
+         long = round(long, digits = 5)) |>
+  st_as_sf(coords = c("lat", "long"),
+           crs = "WGS84") |>
+  st_transform(my_proj)
+
+```
+
+<br>
+
+```{r}
+#| label: prepare-nc-map-county-names
+
+  # Calculate NC height and width in miles along centroid E-W and N-S
+  bb <- st_bbox(nc_state_boundary |>
+                  st_transform(crs = "WGS84"))
+  
+  bb_center <- st_centroid(st_linestring(matrix(bb, ncol = 2, byrow = TRUE)))
+  xcent <- as.numeric(bb_center)[1]
+  ycent <- as.numeric(bb_center)[2]
+  
+  nc_box <- st_sfc(st_polygon(list(matrix(c(bb$xmin, bb$ymax, bb$xmax, bb$ymax, 
+                                            bb$xmax, bb$ymin, bb$xmin, bb$ymin, 
+                                            bb$xmin, bb$ymax), ncol = 2, byrow = TRUE))),
+                   crs = "WGS84") |>
+    # dfMaxLength in m; use smaller number to smooth out the horizontal lines
+    st_segmentize(dfMaxLength = 100000) |>
+    st_as_sf()
+  
+  n_points_on_cross <- 10
+  cent_hor <- seq(bb$xmin, bb$xmax, by = (bb$xmax - bb$xmin) / n_points_on_cross)
+  cent_ver <- seq(bb$ymin, bb$ymax, by = (bb$ymax - bb$ymin) / n_points_on_cross)
+  
+  cent_line_hor <- st_sfc(st_linestring(matrix(c(cent_hor, rep(ycent, n_points_on_cross + 1)), ncol = 2)),
+                          crs = "WGS84") |>
+    st_as_sf() |>
+    st_transform(crs = my_proj)
+  
+  cent_line_ver <- st_sfc(st_linestring(matrix(c(rep(xcent, n_points_on_cross + 1), cent_ver), ncol = 2)),
+                          crs = "WGS84") |>
+    st_as_sf() |>
+    st_transform(crs = my_proj)
+  
+  nc_hor_length_mi <- drop_units(st_length(cent_line_hor) / 1609.34) # m/mi
+  nc_ver_length_mi <- drop_units(st_length(cent_line_ver) / 1609.34) # m/mi
+
+if(!file.exists("./figures/nc-map-with-county-names.png")) {
+  
+  p1 <- ggplot() +
+    geom_sf(data = nc_state_boundary,
+            color = "grey50", fill = NA, size = 1) +
+    geom_sf(data = nc_county_boundaries,
+            aes(fill = region),
+            color = "grey50", alpha = 0.1, size = 0.1) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", size = 1, fill = NA,) +
+    geom_sf(data = mountain_boundary,
+            color = "peru", size = 1, fill = NA) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", size = 1, fill = NA) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", size = 1, fill = NA) +
+    geom_sf(data = nc_city_boundaries,
+            color = "grey80", size = 0, fill = "grey80") +
+    geom_sf(data = nc_mil_base,
+            aes(size = est_size),
+            color = "firebrick", fill = NA, alpha = 0.3, show.legend = FALSE) +
+    geom_sf(data = cent_line_hor,
+            color = "firebrick",
+            arrow = arrow(angle = 90, ends = "both"),
+            linewidth = 0.3) +
+    geom_sf(data = cent_line_ver,
+            color = "firebrick",
+            arrow = arrow(angle = 90, ends = "both"),
+            linewidth = 0.3) +
+    geom_sf_text(data = nc_county_centroids_adj,
+                 aes(label = county)) +
+    scale_color_manual(values = region_colors$color) +
+    scale_fill_manual(values = region_colors$color) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = "NC counties and regions",
+         subtitles = glue("NC is about {round(nc_hor_length_mi)} miles east to west", 
+                          " and {round(nc_ver_length_mi)} miles north to south",
+                          "\nShowing cities and towns with at least 90K population in 2020",
+                          "; red dots are military bases"),
+         x = NULL,
+         y = NULL,
+         fill = "Region",
+         caption = glue(my_caption, 
+                        "\nRegional groupings approximately match those in",
+                        "\n'North Carolina beyond the connected age: the Tar Heel State in 2050'\nBy Michael L. Walden"
+         )
+    )
+
+ggsave("./figures/nc-map-with-county-names.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+```
+
+North Carolina extends about `r round(nc_hor_length_mi)` miles east to west and `r round(nc_ver_length_mi)` miles north to south, with land area encompassing 48,711 square miles (126,161 km^2^). NC is ranked 28^th^ in size among the states.^[<https://en.wikipedia.org/wiki/North_Carolina> ]
+
+Regional designations below approximately match those in Michael L. Walden's *North Carolina beyond the connected age: the Tar Heel State in 2050* with these differences: 
+
+1. I followed county boundaries whereas he drew ellipses, which greatly simplifies my work.
+2. I excluded from the coastal region all counties that lack Atlantic coastline, including those bordering the Albemarle and Pamlico sounds. These counties' economies and demographics more closely resemble their neighboring rural agricultural counties. 
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-county-names
+#| fig-cap: "Map of NC counties and regions"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+knitr::include_graphics("./figures/nc-map-with-county-names.png")
+
+```
+
+<br>
+
+## North Carolina's largest cities
+
+The map above (@fig-nc-map-county-names) includes the boundaries of the largest cities:
+
+```{r}
+#| label: fig-table-nc-cities
+#| fig-cap: "NC cities and towns with population > 90,000 in 2020"
+
+nc_city_boundaries |>
+  st_drop_geometry() |>
+  filter(population_estimate > 90000) |>
+  select(city = municipal_boundary_name, population_estimate_2020 = population_estimate, starts_with("county")) |>
+  arrange(-population_estimate_2020) |>
+  rowwise() |>
+  mutate(county_name2 = replace_na(county_name2, ""),
+         county = glue_collapse(c(county_name1, county_name2, county_name3, county_name4), sep = ", "),
+         county = str_remove(county, "[, ]+$")) |>
+  select(-starts_with("county_name")) |>
+  rename(population = population_estimate_2020) |>
+  gt() |>
+  tab_header(md("**NC cities with estimated population greater than 90K in 2020**")) |>
+  tab_source_note(md(glue("*Note: City boundaries and population (not metropolitan statistical areas (MSAs))", 
+                       "<br>Source: NC OneMap 'NCDOT City Boundaries'*"))
+                  ) |>
+  fmt_number(columns = population,
+             decimals = 0)
+  
+```
+
+<br>
+
+## Population density
+
+Census tract boundaries reveal population patterns. Since the census bureau tries to keep tract population around 4000, the census tracts are smaller where population is more dense (that is, in cities). The density in outer suburbs and smaller cities is close to the state median. The urban regions have been expanding into formerly rural, agricultural areas within the same counties and in adjacent counties.
+
+<br>
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-tract-density-facet-year
+#| fig-cap: "NC population density in 2020 (census tracts)"
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+if(!file.exists("./figures/nc-map-pop-density-2020.png")) {
+  
+  data_for_plot <- d_pop_tract_long |>
+    filter(year %in% c(2020)
+    ) |>
+    mutate(year = factor(year))
+  
+  med_value = data_for_plot |>
+    filter(year == 2020) |>
+    pull(density) |>
+    median()
+  
+  variable_set_for_plot <- data_for_plot |>
+    arrange(variable) |> 
+    mutate(variable = as.character(variable)) |>
+    distinct(variable) |>
+    pull(variable) |>
+    glue_collapse(sep = ", ", last = " and ")
+  
+  p1 <- data_for_plot |>
+    mutate(density = if_else(density < 10, 10, density)) |>
+    ggplot() +
+    geom_sf(aes(fill = density), color = "black", linewidth = 0.1, alpha = 0.8) +
+    geom_sf(data = nc_state_boundary,
+            color = "grey40", linewidth = 1, fill = NA) +
+    geom_sf(data = nc_county_boundaries,
+            color = "grey10", linewidth = 0.1, fill = NA) +
+    geom_sf(data = urban_crescent_boundary,
+            color = "lightskyblue", linewidth = 1, fill = NA, alpha = 1) + #0.1
+    geom_sf(data = mountain_boundary,
+            color = "peru", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = manufacturing_boundary,
+            color = "firebrick", linewidth = 1, fill = NA, alpha = 1) +
+    geom_sf(data = coastal_boundary,
+            color = "mediumblue", linewidth = 1, fill = NA, alpha = 1) +
+    # geom_sf(data = nc_mil_base,
+    #         color = "firebrick", fill = NA, alpha = 0.6, show.legend = FALSE) +
+    scale_fill_gradient2(high = "navyblue", low = "mediumaquamarine", #"yellowgreen", # "lightskyblue",
+                         midpoint = log10(med_value),
+                         trans = "log10",
+    ) +
+    theme(panel.grid = element_blank(),
+          panel.border = element_blank(),
+          axis.text = element_blank(),
+          plot.title = element_text(size = rel(4.0), face = "bold"),
+          legend.position = c(0.2, 0.3)
+    ) +
+    labs(title = glue("North Carolina population density"),
+         subtitle = glue("2020 Census tracts", 
+                         "; white is 2020 median: {round(med_value)} people per sq_mi",
+                         "\nLower bound capped at 10 people / sq_mi",
+                         "; colored boundaries are region designations"),
+         fill = "People\nper sq_mi",
+         caption = my_caption)
+  
+  ggsave("./figures/nc-map-pop-density-2020.png", p1, width = 18, height = 9, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-pop-density-2020.png")
+
+```
+
+<br>
+
+Nighttime light (radiance) is a good proxy for population density.^[[Exploring Nighttime Light in the U.S. Southeast: Model specification and evaluation in the tidymodels framework](https://dmoul.github.io/nightlight/introduction.html) by Daniel Moul ] The North Carolina urban crescent is particularly noticeable. Also noteworthy: the lights reveal the same pattern in North Carolina as in other states in the southeast: urban areas extend across county lines, and nearly every rural county has one at least town with higher density population than the surrounding area--presumably the county seat.
+
+```{r fig.height=11, fig.width=14}
+#| label: fig-nightime-lights-2020
+#| fig-cap: Nighttime average radiance in 2020. [Cloud-free composite image - Annual VNL V2](https://eogdata.mines.edu/products/vnl/) from the [Earth Observation Group](https://payneinstitute.mines.edu/eog/) derived from data collected by the Defense Meteorological Satellite Program’s primary instrument, the Operational Linescan System (DMSP-OLS), employing Visible and Near-Infrared (VNIR) band sensors.
+#| fig-height: 11
+#| fig-width: 14
+#| column: screen-inset-right
+
+
+if(!file.exists("./figures/nc-map-nightlight-2020.png")) {
+  
+  # first get us in the neighborhood before projecting to our standard CRS
+  r <- rast()
+  e <- ext(r)
+  as.vector(e)
+  ext(r) <- c(-85.5, -75, 32, 39) # extent param order: (xmin, xmax, ymin, ymax)
+  
+  # I ran the following to compress the source file (11 GB to 283MB!!) then deleted the source file to save space
+  # writeRaster(rast("./data/eog/VNL_v2_npp_2020_global_vcmslcfg_c202102150000.average_masked.tif"),
+  #           "./data/eog/VNL_v2_npp_2020_global_vcmslcfg_c202102150000.average_masked_compressed.tif",
+  #           gdal = "COMPRESS=DEFLATE")
+  
+  light_map_world_part <- 
+    crop(rast("./data/eog/VNL_v2_npp_2020_global_vcmslcfg_c202102150000.average_masked_compressed.tif"),
+         r)
+  
+  light_map_world_part_projected <- project(light_map_world_part, my_proj)
+  names(light_map_world_part_projected) <- "radiance"
+  # global(light_map_world_part_projected, quantile, 
+  #        probs = c(.8, .85, .9, .95, .97, .98, .99, .995, .999, 1.0), 
+  #        na.rm = TRUE)
+  
+  xx_spatRaster <- light_map_world_part_projected
+  
+  # create better contrast in the plot
+  fix_radiance <- function(x) {
+    ifelse(x < 1, # try 37, 30, other values
+            0,
+            ifelse(x > 200,
+                    200,
+                    x
+            )
+    )
+  }
+  
+  xx_spatRaster2 <- app(xx_spatRaster,
+                        fix_radiance
+  )
+  # global(xx_spatRaster2, quantile, 
+  #        probs = c(.8, .85, .9, .95, .97, .98, .99, .995, .999, 1.0),
+  #        na.rm = TRUE)
+  
+  
+  p1 <- ggplot() +
+    geom_stars(data = st_as_stars(xx_spatRaster2),
+               na.rm = TRUE) +
+    geom_sf(data = nc_state_boundary,
+            color = "yellow", fill = NA, size = 2) +
+    geom_sf(data = nc_county_boundaries,
+            color = "yellow", fill = NA, size = 0.25) +
+    scale_fill_gradient(high = "white", 
+                        low = "black", 
+                        na.value = NA,
+                        trans = "log1p"
+    ) +
+    theme_map() +
+    theme(plot.title = element_text(size = rel(2.0), face = "bold"),
+          legend.position = "none") +
+    labs(title = "North Carolina average nighttime light in 2020",
+         caption = "Source: Light from Earth Observation Group + geometry from US Census via tidycensus; plot: Daniel Moul")
+  
+  ggsave("./figures/nc-map-nightlight-2020.png", p1, width = 14, height = 11, units = "in", dpi = 600, bg = "white")
+}
+
+knitr::include_graphics("./figures/nc-map-nightlight-2020.png")
+
+```
+
+<br>
+
+```{r}
+knitr::knit_exit()
+```
+
+```{r}
+# debug: does the radiance ecdf look OK? Yes.
+rad <- tibble(radiance =  values(light_map_world_part_projected)) |>
+  filter(!is.nan(radiance),
+         !is.na(radiance)) |>
+  slice_sample(prop = 0.025)
+
+ggplot(rad) +
+  stat_ecdf(aes(radiance+1),
+            na.rm = TRUE) +
+  scale_x_log10()
+```
+
