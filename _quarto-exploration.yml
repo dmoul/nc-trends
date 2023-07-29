@@ -1,0 +1,30 @@
+project:
+  output-dir: "_exploration"
+
+book:
+  chapters: 
+    - index.qmd
+    - exploration.qmd
+    - exploration2.qmd
+    - exploration4.qmd
+    - exploration5.qmd
+    - exploration6.qmd
+    - exploration7.qmd
+    - exploration8.qmd
+    - exploration9.qmd
+    - exploration10.qmd
+    - exploration11.qmd
+    - exploration12.qmd
+    - exploration13.qmd
+    - exploration14.qmd
+    - exploration15.qmd
+    - exploration16.qmd
+    - exploration17.qmd
+    - exploration18.qmd
+    - exploration19.qmd
+    - exploration20.qmd
+    - exploration21.qmd
+    - exploration22.qmd
+    - exploration23.qmd
+    - notes-and-todo.qmd
+  

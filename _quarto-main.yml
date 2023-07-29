@@ -1,0 +1,21 @@
+book:
+  chapters: 
+    - index.qmd
+    - nc-in-context.qmd
+    - nc-pop-change.qmd
+    - nc-race-ethnic-change.qmd
+    - nc-pop-pyramids.qmd
+    - nc-education.qmd
+    # - nc-income-change.qmd # now redundant; income is in nc-income-education
+    - nc-income-education.qmd
+    - notes.qmd
+  
+project:
+  output-dir: "_book"
+
+execute:
+  echo: false
+  message: false
+  warn: false
+  error: true
+
