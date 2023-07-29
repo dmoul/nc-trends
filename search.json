@@ -2,16 +2,9 @@
   {
     "objectID": "index.html",
     "href": "index.html",
-    "title": "North Carolina sketch: geography, population, income, and education",
+    "title": "North Carolina trends: geography, population, income, and education",
     "section": "",
-    "text": "Inspired while reading North Carolina beyond the connected age: the Tar Heel State in 2050 by Michael L. Walden, I decided to explore and visualize demographic aspects of NC, limiting myself to current and historical data from the US Census Bureau and the North Carolina Department of Public Instruction. I have not dabbled in future projections, since the significant changes over the last 20-40 years provide plenty to think about.\nAs I write this in late 2022 and early 2023, significant portions of the 2020 Census data are not yet available. For 2020 and 2021 data I used the 2020 decennial “PL” data released for use in redefining the nation’s political maps (“redistricting”) along with the five-year American Community Survey (ACS) ending in 2019 or 2021 and ACS 2021 monthly estimates (aggregated to yearly amounts).\n–Daniel Moul"
-  },
-  {
-    "objectID": "index.html#outline",
-    "href": "index.html#outline",
-    "title": "North Carolina sketch: geography, population, income, and education",
-    "section": "Outline",
-    "text": "Outline\nNorth Carolina in geographical and demographic context with other states.\n\nPhysical geography, including elevation and road map\nUS states’ population and population growth rates\nNC counties and regions\nNC population density\n\nNC trends\n\nPopulation and population growth rates. While the state population has grown, some county populations have shrunk\nRacial group population, growth rates, and changes in proportion. Where has the racial mix changed the most?\nPopulation density\nAge dynamics: Which are counties aging the most? Where are the youth?\n\nSmaller than counties: census blocks\n\nPopulation and population growth rates"
+    "text": "Introduction\nInspired while reading North Carolina beyond the connected age: the Tar Heel State in 2050 by Michael L. Walden, I decided to explore and visualize demographic aspects of NC, limiting myself to current and historical data from the US Census Bureau and the North Carolina Department of Public Instruction. I have not dabbled in future projections, since the significant changes over the last 20-40 years provide plenty to think about.\nAs I write this in late 2022 and early 2023, significant portions of the 2020 Census data are not yet available. For 2020 and 2021 data I used the 2020 decennial “PL” data released for use in redefining the nation’s political maps (“redistricting”) along with the five-year American Community Survey (ACS) ending in 2019 or 2021 and ACS 2021 monthly estimates (aggregated to yearly amounts).\n\n–Daniel Moul"
   },
   {
     "objectID": "nc-in-context.html#physical-geography",
