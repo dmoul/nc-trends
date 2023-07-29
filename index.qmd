@@ -10,25 +10,3 @@ As I write this in late 2022 and early 2023, significant portions of the 2020 Ce
 
 <br>
 
-## Outline {.unnumbered}
-
-North Carolina in geographical and demographic context with other states.
-
-* Physical geography, including elevation and road map
-* US states' population and population growth rates
-* NC counties and regions
-* NC population density
-
-
-NC trends
-
-* Population and population growth rates. While the state population has grown, some county populations have shrunk
-* Racial group population, growth rates, and changes in proportion. Where has the racial mix changed the most?
-* Population density
-* Age dynamics: Which are counties aging the most? Where are the youth?
-
-Smaller than counties: census blocks
-
-* Population and population growth rates
-
-
