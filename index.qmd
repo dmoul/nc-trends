@@ -1,6 +1,34 @@
-# Introduction
+# Introduction {.unnumbered}
 
-Inspired by reading *North Carolina beyond the connected age: the Tar Heel State in 2050* by Michael L. Walden, I want to examine and visualize demograph trends myself.
+Inspired while reading *[North Carolina beyond the connected age: the Tar Heel State in 2050](https://uncpress.org/book/9781469635729/north-carolina-beyond-the-connected-age/)* by Michael L. Walden, I decided to explore and visualize demographic aspects of NC, limiting myself to current and historical data from the US Census Bureau and the North Carolina Department of Public Instruction. I have not dabbled in future projections, since the significant changes over the last 20-40 years provide plenty to think about.
 
-Using tidycensus to get the data and geometry...
+As I write this in late 2022 and early 2023, significant portions of the 2020 Census data are not yet available. For 2020 and 2021 data I used the 2020 decennial "PL" data released for use in redefining the nation's political maps ("redistricting") along with the five-year American Community Survey (ACS) ending in 2019 or 2021 and ACS 2021 monthly estimates (aggregated to yearly amounts).
+
+<br>
+
+*--Daniel Moul*
+
+<br>
+
+## Outline {.unnumbered}
+
+North Carolina in geographical and demographic context with other states.
+
+* Physical geography, including elevation and road map
+* US states' population and population growth rates
+* NC counties and regions
+* NC population density
+
+
+NC trends
+
+* Population and population growth rates. While the state population has grown, some county populations have shrunk
+* Racial group population, growth rates, and changes in proportion. Where has the racial mix changed the most?
+* Population density
+* Age dynamics: Which are counties aging the most? Where are the youth?
+
+Smaller than counties: census blocks
+
+* Population and population growth rates
+
 
