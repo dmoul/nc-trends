@@ -1,14 +1,28 @@
 # Notes {.unnumbered}
 
+## Acknowledgements and sources
+
 I'm grateful to the people and organizations providing the open data and tools that I used, including the following:
 
-* The [U.S. Census Bureau](https://www.census.gov) for it's exacting work over the decades and the high-quality data they make available freely.
+* The people of the [U.S. Census Bureau](https://www.census.gov) for their exacting work over the decades and the high-quality data they make available freely.
 * [National Historical Geographic Information System](https://www.nhgis.org) (NHGIS) for U.S. Census data. It's one of the projects of [IPUMS](https://www.ipums.org), which "... provides census and survey data from around the world integrated across time and space. IPUMS integration and documentation makes it easy to study change, conduct comparative research, merge information across data types, and analyze individuals within family and community context. Data and services are available free of charge."
-* [tidycensus](https://walker-data.com/tidycensus/) and [tigris](https://github.com/walkerke/tigris) R packages make it easy to download US Census demographic and geometry data from APIs provided by the Census Bureau.[
+* [tidycensus](https://walker-data.com/tidycensus/) and [tigris](https://github.com/walkerke/tigris) R packages make it easy to download US Census demographic and geometry data from APIs provided by the Census Bureau.
 * North Carolina Department of Public Instruction, which makes [school report cards](https://www.dpi.nc.gov/data-reports/school-report-cards) and related data [available for researchers](https://www.dpi.nc.gov/data-reports/school-report-cards/school-report-card-resources-researchers).
 * US Geological Service (USGS) for an NC excerpt of the [National Map](https://apps.nationalmap.gov/viewer/) and a map of the southeastern states' geological regions.
-* [terra](https://rspatial.github.io/terra/index.html), [sf](https://r-spatial.github.io/sf/), and [stars](https://r-spatial.github.io/stars/) geocomputational packages for R (and RStudio and the whole R open ecosystem) and for the *[Geocomputation with R](https://r.geocompx.org)* book by Robin Lovelace, Jakub Nowosad, and Jannes Muenchow.
+* [terra](https://rspatial.github.io/terra/index.html), [sf](https://r-spatial.github.io/sf/), and [stars](https://r-spatial.github.io/stars/) geocomputational packages for R (and RStudio and the whole R open ecosystem) and for *[Geocomputation with R](https://r.geocompx.org)* by Robin Lovelace, Jakub Nowosad, and Jannes Muenchow.
 * [Earth Observation Group](https://payneinstitute.mines.edu/eog/) (EOG), Payne Institute for Public Policy, for average nighttime light.
 * NC OneMap for [NCDOT city boundaries](https://www.nconemap.gov/datasets/NCDOT::ncdot-city-boundaries/explore?location=35.115032%2C-79.832300%2C7.86) and estimated population.
 * [Opentopology.com](www.opentopology.com) for NC elevation data and Wikipedia for [highest mountains in NC](https://en.wikipedia.org/wiki/List_of_mountains_in_North_Carolina).
-* Photo of [Welcome to North Carolina](https://commons.wikimedia.org/wiki/File:Entering_Union_County_on_North_Carolina_Highway_200.jpg) sign  uploaded to Flickr by WashuOtaku. Unmodified and used by permission ([Attribution-ShareAlike 2.0 Generic (CC BY-SA 2.0)](https://creativecommons.org/licenses/by-sa/2.0/deed.en)).
+
+<br>
+
+## Recreating this analysis
+
+This is probably the least reproducible of the analyses I have posted at <https://dmoul.github.io>, for the following reasons:
+
+* On and off over a number of months I explored a number of topics, collecting data from various sources and working with it. Some explorations petered out, others "graduated" in the data transformations and visualizations included here. I haven't gone back to clean out the functions, scripts, and data I decided not to use.
+* NHGIS terms of use are that every consumer should get the data from them directly. I haven't gone back to create simple, shareable documentation of what data I downloaded.
+* Even if the terms of use allowed all the data to be shared, there is too much to upload it to GitHub.
+
+So if you are interested in learning from this analysis I hope reading the scripts and rerunning ones that get data directly (tidycensus, tigris) will get you far enough to be helpful.
+
