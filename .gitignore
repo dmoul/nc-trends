@@ -3,6 +3,9 @@
 
 ### Added for this project
 
+# data is too large to include
+/data/
+
 # misc
 /not-for-pushing-to-github/
 
