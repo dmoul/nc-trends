@@ -147,7 +147,7 @@ d_pop_tract_long <- d_pop_tract |>
 
 <br>
 
-North Carolina is the USA's `r english::ordinal(nc_rank)` most populous state as of the 2020 decennial census. One hundred counties extend from the Appalachian mountains in the west to the Atlantic Ocean in the east. The population has been growing faster than the national average as people move from other states to enjoy the temperate climate, lower cost of living compared to more populated coastal states, the attractions of the mountains and the coast, and the dynamic economies in the urban crescent that runs through the middle of the state.
+North Carolina is the `r english::ordinal(nc_rank)` most populous state in the USA as of the 2020 decennial census. One hundred counties descend from the heights of the Appalachian mountains in the west to the Atlantic Ocean in the east. The population has been growing faster than the national average as people move from other states to enjoy the temperate climate, lower cost of living compared to more populated coastal states, the attractions of the mountains and the coast, and the dynamic economies in the urban crescent that runs through the middle of the state.
 
 ## Physical geography
 
@@ -681,10 +681,11 @@ ggsave("./figures/nc-map-with-county-names.png", p1, width = 18, height = 9, uni
 
 North Carolina extends about `r round(nc_hor_length_mi)` miles east to west and `r round(nc_ver_length_mi)` miles north to south, with land area encompassing 48,711 square miles (126,161 km^2^). NC is ranked 28^th^ in size among the states.^[<https://en.wikipedia.org/wiki/North_Carolina> ]
 
-Regional designations below approximately match those in Michael L. Walden's *North Carolina beyond the connected age: the Tar Heel State in 2050* with these differences: 
+The regional designations below approximately match those in Michael L. Walden's *North Carolina beyond the connected age: the Tar Heel State in 2050* with these differences: 
 
-1. I followed county boundaries whereas he drew ellipses, which greatly simplifies my work.
+1. He drew ellipses, while I followed county boundaries. This greatly simplifies my work, since data sources provide county-level data.
 2. I excluded from the coastal region all counties that lack Atlantic coastline, including those bordering the Albemarle and Pamlico sounds. These counties' economies and demographics more closely resemble their neighboring rural agricultural counties. 
+3. I made the urban crescent "technology" region thinner, excluding mostly-rural counties that are experiencing some spill-over from adjacent urban areas.
 
 ```{r fig.height=9, fig.width=18}
 #| label: fig-nc-map-county-names
@@ -694,6 +695,22 @@ Regional designations below approximately match those in Michael L. Walden's *No
 #| column: screen-inset-right
 
 knitr::include_graphics("./figures/nc-map-with-county-names.png")
+
+```
+
+<br>
+
+For comparison:
+
+```{r fig.height=9, fig.width=18}
+#| label: fig-nc-map-walden-nc-regions
+#| fig-cap: "Map of Michael Walden's economic regions in *North Carolina beyond the connected age: the Tar Heel State in 2050*. Page 40."
+#| fig-alt: "Map of North Carolina counties highlighting regions or retirement and toursism (mountains and Altantic coast), technology (the urban crescent), and manufuacturating (southwest and east of the urban crescent)."
+#| fig-height: 9
+#| fig-width: 18
+#| column: screen-inset-right
+
+knitr::include_graphics("./images/walden-nc-regions.png")
 
 ```
 
@@ -807,7 +824,7 @@ knitr::include_graphics("./figures/nc-map-pop-density-2020.png")
 
 <br>
 
-Nighttime light (radiance) is a good proxy for population density.^[[Exploring Nighttime Light in the U.S. Southeast: Model specification and evaluation in the tidymodels framework](https://dmoul.github.io/nightlight/introduction.html) by Daniel Moul ] The North Carolina urban crescent is particularly noticeable. Also noteworthy: the lights reveal the same pattern in North Carolina as in other states in the southeast: urban areas extend across county lines, and nearly every rural county has one at least town with higher density population than the surrounding area--presumably the county seat.
+Nighttime light (radiance) is a good proxy for population density.^[[Exploring Nighttime Light in the U.S. Southeast: Model specification and evaluation in the tidymodels framework](https://dmoul.github.io/nightlight/introduction.html) by Daniel Moul ]. The lights reveal the same pattern in North Carolina as in other states in the southeast: urban areas extend across county lines, and nearly every rural county has one at least town with higher density population than the surrounding area--presumably the county seat. The North Carolina urban crescent is particularly noticeable in @fig-nightime-lights-2020.
 
 ```{r fig.height=11, fig.width=14}
 #| label: fig-nightime-lights-2020
@@ -887,21 +904,3 @@ knitr::include_graphics("./figures/nc-map-nightlight-2020.png")
 ```
 
 <br>
-
-```{r}
-knitr::knit_exit()
-```
-
-```{r}
-# debug: does the radiance ecdf look OK? Yes.
-rad <- tibble(radiance =  values(light_map_world_part_projected)) |>
-  filter(!is.nan(radiance),
-         !is.na(radiance)) |>
-  slice_sample(prop = 0.025)
-
-ggplot(rad) +
-  stat_ecdf(aes(radiance+1),
-            na.rm = TRUE) +
-  scale_x_log10()
-```
-

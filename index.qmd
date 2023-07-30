@@ -2,7 +2,7 @@
 
 Inspired while reading *[North Carolina beyond the connected age: the Tar Heel State in 2050](https://uncpress.org/book/9781469635729/north-carolina-beyond-the-connected-age/)* by Michael L. Walden, I decided to explore and visualize demographic aspects of NC, limiting myself to current and historical data from the US Census Bureau and the North Carolina Department of Public Instruction. I have not dabbled in future projections, since the significant changes over the last 20-40 years provide plenty to think about.
 
-As I write this in late 2022 and early 2023, significant portions of the 2020 Census data are not yet available. For 2020 and 2021 data I used the 2020 decennial "PL" data released for use in redefining the nation's political maps ("redistricting") along with the five-year American Community Survey (ACS) ending in 2019 or 2021 and ACS 2021 monthly estimates (aggregated to yearly amounts).
+As I write this in late 2022 and early 2023, significant portions of the 2020 Census data are not yet available. For 2020 and 2021 data I used the 2020 decennial "PL" data released for use in redefining the nation's political maps ("redistricting") along with the five-year American Community Survey (ACS) ending in 2019 or 2021 and ACS 2021 monthly estimates (aggregated to yearly amounts). Education data comes from the North Carolina Department of Public Instruction.
 
 <br>
 

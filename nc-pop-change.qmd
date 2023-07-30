@@ -470,7 +470,7 @@ nc_county_boundaries |>
 
 Population changes are due to (1) births and deaths ("natural increase"); and (2) migration in and out ("net migration").  In the case of North Carolina as a whole, most of the increase is due to net migration, as seen in @fig-estimates-state-rates-natural-migration and @fig-estimates-five-year-four-vars-state-summary. 
 
-In @fig-estimates-state-rates-natural-migration each thin line shows one county's rate of natural increase or rate of net migration. The thick straight lines are linear regression lines (not weighted by county population).
+In @fig-estimates-state-rates-natural-migration each thin line shows one county's rate of natural increase or rate of net migration. The thick line is the weighted mean.
 
 <br>
 
@@ -579,14 +579,29 @@ multi_year_nc_counties <- map_df(2015:2019, get_nc_county_estimates) |>
 #| fig-width: 10
 #| column: screen-inset-right
 
+data_for_mean_plot <- multi_year_nc_counties |>
+  #filter(str_detect(variable, "^R")) |>
+  filter(str_detect(variable, "NETMIG|NATURALINC")) |>
+  pivot_wider(id_cols = c(county, GEOID, datayear), names_from = "variable", values_from = "value") |>
+  group_by(datayear) |>
+  reframe(mean_rnaturalinc = weighted.mean(RNATURALINC, w = abs(NATURALINC)),
+         mean_rnetmig = weighted.mean(RNETMIG, w = abs(NETMIG))) |>
+  ungroup() |>
+  #filter(variable %in% c("RNETMIG", "RNATURALINC")) |>
+  pivot_longer(cols = starts_with("mean_"), names_to = "variable", values_to = "value") |>
+  mutate(variable = if_else(variable == "mean_rnetmig", "Rate of net migration", "Rate of natural increase"))
 
 multi_year_nc_counties |>
   filter(str_detect(variable, "^R")) |>
   filter(variable %in% c("RNETMIG", "RNATURALINC")) |>
+  mutate(variable = if_else(variable == "RNETMIG", "Rate of net migration", "Rate of natural increase")) |>
   ggplot(aes(x = datayear, y = value, color = variable)) +
   geom_hline(yintercept = 0, lty = 2, linewidth = 1, color = "firebrick", alpha = 0.25) +
-  geom_line(aes(group = county), alpha = 0.1) +
-  geom_smooth(method = "lm", formula = 'y ~ x', se = FALSE) + #, fill = "blue") +
+  geom_line(aes(group = county), alpha = 0.1, show.legend = FALSE) +
+  #geom_smooth(method = "lm", formula = 'y ~ x', se = FALSE, show.legend = FALSE) +
+  geom_line(data = data_for_mean_plot,
+            aes(x = datayear, y = value, color = variable),
+            linewidth = 1, alpha = 0.8) +
   scale_y_continuous(labels = label_percent()) +
   scale_color_viridis_d(end = 0.8) +
   coord_cartesian(ylim = c(-0.02, 0.02)) +
@@ -597,9 +612,8 @@ multi_year_nc_counties |>
         legend.position = "top") +
   guides(color = guide_legend(override.aes = list(linewidth = 3))) +
   labs(
-    title = glue("NC population increase 2015-2019 was due to net migration",
-                 "\nRates of natural increase and net migration"),
-    subtitle = glue("Birth and death rates were nearly equal; death rate overtook birth rate during this time period"),
+    title = "NC population increase 2015-2019",
+    subtitle = glue("Roughtly one third was due to natural increase; two thirds due to net migration"),
     x = NULL,
     y = "Yearly rate",
     color = NULL,
@@ -608,11 +622,11 @@ multi_year_nc_counties |>
 
 ```
 
-<br>
+<!-- br>< -->
 
-At the state-level, in this time period the pattern repeats each year: there are more births than deaths, and domestic and international migration combine to nearly cancel out the deaths, resulting in a population growth of about one percent each year.
+<!-- In this time period the state-level pattern repeats each year: there are more births than deaths, and domestic and international migration are net positive, resulting in a population growth of about one percent each year. -->
 
-<br>
+<!-- <br> -->
 
 ```{r fig.height=6, fig.width=8}
 #| label: fig-estimates-five-year-four-vars-state-summary
@@ -620,6 +634,7 @@ At the state-level, in this time period the pattern repeats each year: there are
 #| fig-height: 6
 #| fig-width: 8
 #| column: screen-inset-right
+#| eval: false
 
 
 #factor_county_stretch <- 0 # Not needed for state summary

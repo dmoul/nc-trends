@@ -428,9 +428,9 @@ df_race |>
   )
 ```
 
-<br>
+<!-- <br> -->
 
-We can also look directly at *changes* (delta) in proportion of the population from the last decennial census to the next.
+<!-- We can also look directly at *changes* (delta) in proportion of the population from the last decennial census to the next. -->
 
 ```{r fig.height=6, fig.width=10}
 #| label: fig-race-pct-delta-ecdf
@@ -438,6 +438,7 @@ We can also look directly at *changes* (delta) in proportion of the population f
 #| fig-height: 6
 #| fig-width: 10
 #| column: screen-inset-right
+#| eval: false
 
 county_race_delta |>
   mutate(year = factor(year)) |>
